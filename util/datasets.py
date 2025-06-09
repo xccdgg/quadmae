@@ -1,0 +1,195 @@
+# util/datasets.py  ── FULL FILE
+# =============================================================================
+# 主要改动
+# -----------------------------------------------------------------------------
+# 1.   AddNoise 把命令行传入的 sigma 解释为 **像素域 σ_pix**，
+#      然后用与 util.smooth 相同的公式放大成 σ_total → σ_L / σ_H。
+# 2.   支持 SoftClamp（与 Smooth 中的 soft_limit 一致），可选地对加噪结果做
+#      光滑饱和，避免硬剪裁带来的方差缩减。
+# 3.   其余 DataLoader / Dataset 逻辑与原文件一致。
+# =============================================================================
+from __future__ import annotations
+
+import math
+from typing import Any, Tuple
+
+import numpy as np
+from PIL import Image                     # noqa: F401  (备用：自定义数据集)
+import torch
+from torch import Tensor
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+from torchvision.datasets import CIFAR10
+from util.smooth import _sigma_total_from_pixel
+from util.quadatasetgpu import QuaternionWaveletNoise
+from util.softclamp     import SoftClamp         # 软饱和单独放在 util/softclamp.py
+
+
+# -----------------------------------------------------------------------------
+# AddNoise ---------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+class AddNoise:
+    r"""把 **像素域 σ_pix** 噪声注入到图像（四元数小波 or 像素高斯）。
+
+    Parameters
+    ----------
+    sigma : float
+        目标像素域 σ_pix。
+    use_quaternion_noise : bool, default True
+        True → QWT 噪声；False → 传统像素高斯噪声。
+    levels : int, default 1
+        QWT 分解层数（当前实现只支持 1）。
+    ratio : float, default 3.0
+        σ_H / σ_L。
+    device : str / torch.device, default "cpu"
+        生成噪声张量所在设备。
+    soft_limit : float | None
+        若给定，则对加噪后像素做 SoftClamp；默认自动设成 3 σ_pix。
+    """
+
+    def __init__(
+        self,
+        sigma: float,
+        *,
+        use_quaternion_noise: bool = True,
+        levels: int = 1,
+        ratio: float = 3.0,
+        device: Any = "cpu",
+        soft_limit: float | None = None,
+    ) -> None:
+        self.sigma_pix:   float = float(sigma)
+        self.use_qwt     = bool(use_quaternion_noise)
+        self.levels:     int   = int(levels)
+        self.ratio:      float = float(ratio)
+        self.device                = torch.device(device)
+        self.soft_limit: float | None = soft_limit if soft_limit is not None else (
+            3.0 * self.sigma_pix if self.sigma_pix > 0 else None
+        )
+        self.soft_clamp = SoftClamp(self.soft_limit) if self.soft_limit else lambda x: x
+
+        # 像素 σ → σ_total → σ_L / σ_H
+        self.sigma_total = _sigma_total_from_pixel(self.sigma_pix, self.ratio)
+        self.sigma_low   = self.sigma_total / (1.0 + self.ratio)
+        self.sigma_high  = self.sigma_low * self.ratio
+
+        print(
+            f"[AddNoise] σ_pix={self.sigma_pix:.4f}  σ_total={self.sigma_total:.4f} "
+            f"σ_L={self.sigma_low:.4f}  σ_H={self.sigma_high:.4f}  ratio={self.ratio} "
+            f"soft_limit={self.soft_limit}"
+        )
+
+    # ------------------------------------------------------------------
+    def __call__(self, img: Tensor) -> Tensor:
+        """对单张 [C,H,W] 或批量 [B,C,H,W] 图像加噪"""
+        if not torch.is_tensor(img):
+            # PIL → Tensor
+            arr = np.asarray(img, dtype=np.float32) / 255.0
+            img = torch.from_numpy(arr).permute(2, 0, 1)
+
+        if self.sigma_pix <= 0:
+            return img
+
+        # ---------------- QWT 噪声 ----------------
+        if self.use_qwt:
+            single = (img.dim() == 3)
+            if single:
+                img = img.unsqueeze(0)          # [1,C,H,W]
+
+            noisy = QuaternionWaveletNoise.apply_noise(
+                img,
+                sigma=self.sigma_total,         # BEFORE /2 per component
+                filter_name="haar",
+                levels=self.levels,
+                ratio=self.ratio,
+                device=self.device,
+            )
+            noisy = self.soft_clamp(noisy)
+            return noisy.squeeze(0) if single else noisy
+
+        # ---------------- 像素高斯 ----------------
+        noise = torch.randn_like(img) * self.sigma_pix
+        noisy = (img + noise).clamp(0.0, 1.0)
+        return noisy
+
+
+# -----------------------------------------------------------------------------
+# NoisyImageDataset  &  builder helpers ---------------------------------------
+# -----------------------------------------------------------------------------
+class NoisyImageDataset(Dataset):
+    """CIFAR-10 + 可选噪声（QWT 或 Pixel 高斯）。"""
+
+    def __init__(
+        self,
+        data_root: str,
+        train: bool,
+        input_size: int,
+        batch_size: int,
+        *,
+        use_quaternion_noise: bool = True,
+        noise_sigma: float = 0.0,
+        levels: int = 1,
+        ratio: float = 3.0,
+    ) -> None:
+        self.batch_size = batch_size
+
+        transform = [
+            transforms.Resize((input_size, input_size)),
+            transforms.ToTensor(),
+        ]
+        if noise_sigma and noise_sigma > 0:
+            transform.append(
+                AddNoise(
+                    sigma=noise_sigma,
+                    use_quaternion_noise=use_quaternion_noise,
+                    levels=levels,
+                    ratio=ratio,
+                )
+            )
+        self.transform = transforms.Compose(transform)
+
+        self.dataset = CIFAR10(
+            root=data_root,
+            train=train,
+            transform=self.transform,
+            download=True,
+        )
+
+    # -------------- Dataset API -----------------
+    def __len__(self) -> int:
+        return len(self.dataset)
+
+    def __getitem__(self, idx: int) -> Tuple[Tensor, int]:
+        return self.dataset[idx]
+
+    # -------------- helper ----------------------
+    def get_dataloader(self, shuffle: bool = True, num_workers: int = 4) -> DataLoader:
+        return DataLoader(
+            self,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=True,
+        )
+
+
+# ---------------------------------------------------------------------------
+# build_dataset / build_dataset_with_interval  ------------------------------
+# ---------------------------------------------------------------------------
+def build_dataset(split: str, args):
+    """下游微调/评估用 CIFAR-10；split ∈ {'train','val','test'}"""
+    is_train = (split.lower() == "train")
+    return NoisyImageDataset(
+        data_root=args.data_path,
+        train=is_train,
+        input_size=args.input_size,
+        batch_size=args.batch_size,
+        use_quaternion_noise=args.use_quaternion_noise,
+        noise_sigma=args.sigma,
+        levels=args.levels,
+        ratio=args.ratio,
+    )
+
+
+def build_dataset_with_interval(split: str, args):
+    """示例：按固定间隔抽样，可根据需要定制更复杂逻辑。"""
+    return build_dataset(split, args)
