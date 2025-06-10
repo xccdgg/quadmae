@@ -302,6 +302,11 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
+        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
+        for name, param in model.named_parameters():
+            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
+                param.data = param.data.float()
+
 
     elif args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
@@ -342,7 +347,12 @@ def main(args):
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
-        
+
+        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
+        for name, param in model.named_parameters():
+            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
+                param.data = param.data.float()
+
         # 放宽断言条件
         allowed_missing = {'head.weight', 'head.bias'}
         if args.global_pool:
