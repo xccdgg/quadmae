@@ -37,7 +37,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(args.sigma)
+    noised = AddNoise(args.sigma, device=device)
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -53,6 +53,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         samples = noised(samples)
         samples = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(samples)
+        # keep data on the training device and match model dtype
+        samples = samples.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -118,7 +120,7 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(args.sigma)
+    noised = AddNoise(args.sigma, device=device)
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -138,7 +140,7 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
         targets = targets.repeat(args.num_noise_sample)
         samples = noised(samples)
         samples = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(samples)
-        
+        samples = samples.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
 
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
@@ -212,6 +214,7 @@ def evaluate(data_loader, model, device):
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
         images = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(images)
+        images = images.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
 
         # compute output
         with torch.cuda.amp.autocast():
@@ -242,7 +245,7 @@ def evaluate_radius_0(data_loader, model, device, sigma=0.25, num_sample=100, st
     header = 'Test:'
     
     # gaussian augmentation
-    noised = AddNoise(sigma)
+    noised = AddNoise(sigma, device=device)
 
     # switch to evaluation mode
     model.eval()
@@ -263,6 +266,7 @@ def evaluate_radius_0(data_loader, model, device, sigma=0.25, num_sample=100, st
         for _ in range(num_sample // stride):
             noisy = noised(images)
             noisy = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(noisy)
+            noisy = noisy.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
             # compute output
             with torch.cuda.amp.autocast():
                 # (b*s, num_classes)
