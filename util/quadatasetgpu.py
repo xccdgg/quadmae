@@ -171,6 +171,9 @@ class QuaternionWaveletNoise:
         single = x.dim() == 3
         if single:
             x = x.unsqueeze(0)
+        orig_dtype = x.dtype
+        if orig_dtype == torch.float16:
+            x = x.to(torch.float32)
         N, C, H, W = x.shape
         qwn = QuaternionWaveletNoise(sigma, device=device, filter_name=filter_name, levels=levels, ratio=ratio)
         x = x.to(qwn.device).float()
@@ -179,4 +182,5 @@ class QuaternionWaveletNoise:
         coeffs = qwn._inject(coeffs)
         rec = qwn.qwt.reconstruct(coeffs)
         out = rec.permute(0, 3, 1, 2) if rec.dim() == 4 else rec.unsqueeze(3).permute(0, 3, 1, 2)
+        out = out.to(orig_dtype)
         return out.squeeze(0) if single else out

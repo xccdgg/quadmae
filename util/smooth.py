@@ -115,7 +115,7 @@ class Smooth(nn.Module):
     def _ensure_tensor(self, x: torch.Tensor) -> torch.Tensor:
         if x.dim() == 4:
             x = x.squeeze(0)
-        return x.to(self.device, dtype=torch.float32)
+        return x.to(self.device)
 
     def _resize(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] == self.input_size:

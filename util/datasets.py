@@ -104,12 +104,13 @@ class AddNoise:
                 device=self.device,
             )
             noisy = self.soft_clamp(noisy)
-            return noisy.squeeze(0) if single else noisy
+            out = noisy.squeeze(0) if single else noisy
+            return out.to(dtype=torch.float16)
 
         # ---------------- 像素高斯 ----------------
         noise = torch.randn_like(img) * self.sigma_pix
         noisy = (img + noise).clamp(0.0, 1.0)
-        return noisy
+        return noisy.to(dtype=torch.float16)
 
 
 # -----------------------------------------------------------------------------
