@@ -320,6 +320,11 @@ def main(args):
         if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, 'state_dict'):
             checkpoint_model = checkpoint_model.state_dict()
 
+        # 若权重以半精度存储，统一转换成 float32
+        for k, v in checkpoint_model.items():
+            if isinstance(v, torch.Tensor):
+                checkpoint_model[k] = v.float()
+
         state_dict = model.state_dict()
 
         # 移除 head 层不匹配的参数
