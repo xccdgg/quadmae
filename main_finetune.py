@@ -255,10 +255,27 @@ def main(args):
     )
 
     if args.finetune and not args.eval:
-        checkpoint = torch.load(args.finetune, map_location='cpu')
+        checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
 
         print("Load pre-trained checkpoint from: %s" % args.finetune)
-        checkpoint_model = checkpoint['model']
+
+        # be compatible with various checkpoint formats
+        if 'model' in checkpoint:
+            checkpoint_model = checkpoint['model']
+        elif 'state_dict' in checkpoint:
+            checkpoint_model = checkpoint['state_dict']
+        else:
+            # checkpoint might be a bare state_dict
+            checkpoint_model = checkpoint
+
+        # if a full model was saved directly, extract its state_dict
+        if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, 'state_dict'):
+            checkpoint_model = checkpoint_model.state_dict()
+
+        # convert possible fp16 weights to float32
+        for k, v in checkpoint_model.items():
+            if isinstance(v, torch.Tensor):
+                checkpoint_model[k] = v.float()
         state_dict = model.state_dict()
         for k in ['head.weight', 'head.bias']:
             if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
