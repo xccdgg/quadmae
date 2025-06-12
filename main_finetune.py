@@ -144,6 +144,12 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
+    parser.add_argument('--use_quaternion_noise', action='store_true', default=True,
+                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    parser.add_argument('--levels', default=1, type=int,
+                        help='Levels of QWT decomposition for noise')
+    parser.add_argument('--ratio', default=3.0, type=float,
+                        help='Sigma_H / Sigma_L ratio for QWT noise')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
         
@@ -175,9 +181,9 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_train = build_dataset(is_train=True, args=args)
-    dataset_val = build_dataset(is_train=False, args=args)
-    dataset_certify = build_dataset_with_interval(is_train=False, args=args)
+    dataset_train = build_dataset("train", args)
+    dataset_val = build_dataset("val", args)
+    dataset_certify = build_dataset_with_interval("val", args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
