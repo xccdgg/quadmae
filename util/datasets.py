@@ -10,6 +10,16 @@
 # =============================================================================
 from __future__ import annotations
 
+def _to_bool(v: Any) -> bool:
+    """Robust bool conversion for cli strings."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.lower() in {"1", "true", "yes", "t"}
+    return bool(v)
+
 import math
 from typing import Any, Tuple
 
@@ -58,7 +68,7 @@ class AddNoise:
         soft_limit: float | None = None,
     ) -> None:
         self.sigma_pix:   float = float(sigma)
-        self.use_qwt     = bool(use_quaternion_noise)
+        self.use_qwt     = _to_bool(use_quaternion_noise)
         self.levels:     int   = int(levels)
         self.ratio:      float = float(ratio)
         self.device                = torch.device(device)
@@ -141,7 +151,7 @@ class NoisyImageDataset(Dataset):
             transform.append(
                 AddNoise(
                     sigma=noise_sigma,
-                    use_quaternion_noise=use_quaternion_noise,
+                    use_quaternion_noise=_to_bool(use_quaternion_noise),
                     levels=levels,
                     ratio=ratio,
                 )
@@ -184,7 +194,7 @@ def build_dataset(split: str, args):
         train=is_train,
         input_size=args.input_size,
         batch_size=args.batch_size,
-        use_quaternion_noise=args.use_quaternion_noise,
+        use_quaternion_noise=_to_bool(args.use_quaternion_noise),
         noise_sigma=args.sigma,
         levels=args.levels,
         ratio=args.ratio,
