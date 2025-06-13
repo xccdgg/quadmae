@@ -144,23 +144,8 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
-    def str2bool(v):
-        if isinstance(v, bool):
-            return v
-        if v.lower() in {"yes", "true", "t", "1"}:
-            return True
-        if v.lower() in {"no", "false", "f", "0"}:
-            return False
-        raise argparse.ArgumentTypeError("Boolean value expected")
-
-    parser.add_argument(
-        '--use_quaternion_noise',
-        type=str2bool,
-        nargs='?',
-        const=True,
-        default=False,
-        help='Use quaternion wavelet noise instead of pixel Gaussian',
-    )
+    parser.add_argument('--use_quaternion_noise', default=False,
+                        help='Use quaternion wavelet noise instead of pixel Gaussian')
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
@@ -361,32 +346,7 @@ def main(args):
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        test_stats = evaluate_radius_0(
-            data_loader_certify,
-            model,
-            device,
-            args.sigma,
-            use_quaternion_noise=args.use_quaternion_noise,
-            levels=args.levels,
-            ratio=args.ratio,
-        )
-            test_stats_r0 = evaluate_radius_0(
-                data_loader_certify,
-                model,
-                device,
-                args.sigma,
-                stride=25,
-                use_quaternion_noise=args.use_quaternion_noise,
-                levels=args.levels,
-                ratio=args.ratio,
-            )
-            model,
-            device,
-            args.sigma,
-            use_quaternion_noise=args.use_quaternion_noise,
-            levels=args.levels,
-            ratio=args.ratio,
-        )
+        test_stats = evaluate_radius_0(data_loader_certify, model, device, args.sigma)
         print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
@@ -426,16 +386,7 @@ def main(args):
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if (epoch + 1) % 1 == 0:
-            test_stats_r0 = evaluate_radius_0(
-                data_loader_certify,
-                model,
-                device,
-                args.sigma,
-                stride=25,
-                use_quaternion_noise=args.use_quaternion_noise,
-                levels=args.levels,
-                ratio=args.ratio,
-            )
+            test_stats_r0 = evaluate_radius_0(data_loader_certify, model, device, args.sigma, stride=25)
             print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
             max_r0_accuracy = max(max_r0_accuracy, test_stats_r0['acc1_r0'])
             print(f'Max accuracy on radius 0: {max_r0_accuracy:.2f}%')
