@@ -370,6 +370,23 @@ def main(args):
             levels=args.levels,
             ratio=args.ratio,
         )
+            test_stats_r0 = evaluate_radius_0(
+                data_loader_certify,
+                model,
+                device,
+                args.sigma,
+                stride=25,
+                use_quaternion_noise=args.use_quaternion_noise,
+                levels=args.levels,
+                ratio=args.ratio,
+            )
+            model,
+            device,
+            args.sigma,
+            use_quaternion_noise=args.use_quaternion_noise,
+            levels=args.levels,
+            ratio=args.ratio,
+        )
         print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
