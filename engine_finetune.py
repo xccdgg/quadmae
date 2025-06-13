@@ -37,7 +37,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(args.sigma, device=device)
+    noised = AddNoise(
+        args.sigma,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
+        device=device,
+    )
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -120,7 +126,13 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(args.sigma, device=device)
+    noised = AddNoise(
+        args.sigma,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
+        device=device,
+    )
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -234,7 +246,18 @@ def evaluate(data_loader, model, device):
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()
-def evaluate_radius_0(data_loader, model, device, sigma=0.25, num_sample=100, stride=50):
+def evaluate_radius_0(
+    data_loader,
+    model,
+    device,
+    sigma=0.25,
+    *,
+    num_sample=100,
+    stride=50,
+    use_quaternion_noise=True,
+    levels=1,
+    ratio=3.0,
+):
     '''
     randomized smoothing on radius 0, actually a model ensembling.
     num_sample: the times of sampling, should be a multiple of stride
@@ -245,7 +268,13 @@ def evaluate_radius_0(data_loader, model, device, sigma=0.25, num_sample=100, st
     header = 'Test:'
     
     # gaussian augmentation
-    noised = AddNoise(sigma, device=device)
+    noised = AddNoise(
+        sigma,
+        use_quaternion_noise=use_quaternion_noise,
+        levels=levels,
+        ratio=ratio,
+        device=device,
+    )
 
     # switch to evaluation mode
     model.eval()

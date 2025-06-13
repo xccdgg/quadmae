@@ -423,7 +423,16 @@ def main(args):
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        test_stats = evaluate_radius_0(data_loader_val, model, device, args.sigma, stride=100)
+        test_stats = evaluate_radius_0(
+            data_loader_val,
+            model,
+            device,
+            args.sigma,
+            stride=100,
+            use_quaternion_noise=args.use_quaternion_noise,
+            levels=args.levels,
+            ratio=args.ratio,
+        )
         print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
@@ -463,7 +472,16 @@ def main(args):
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if (epoch + 1) % 1 == 0:
-            test_stats_r0 = evaluate_radius_0(data_loader_certify, model, device, args.sigma, stride=25)
+            test_stats_r0 = evaluate_radius_0(
+                data_loader_certify,
+                model,
+                device,
+                args.sigma,
+                stride=25,
+                use_quaternion_noise=args.use_quaternion_noise,
+                levels=args.levels,
+                ratio=args.ratio,
+            )
             print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
             if test_stats_r0['acc1_r0'] > max_r0_accuracy:
                 misc.save_model(
