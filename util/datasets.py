@@ -183,6 +183,20 @@ class NoisyImageDataset(Dataset):
         )
 
 
+class DatasetWithInterval(Dataset):
+    """Wrap an existing dataset to sample items at a fixed interval."""
+
+    def __init__(self, dataset: Dataset, interval: int) -> None:
+        self.dataset = dataset
+        self.interval = max(1, int(interval))
+
+    def __getitem__(self, index: int):
+        return self.dataset[index * self.interval]
+
+    def __len__(self) -> int:
+        return len(self.dataset) // self.interval
+
+
 # ---------------------------------------------------------------------------
 # build_dataset / build_dataset_with_interval  ------------------------------
 # ---------------------------------------------------------------------------
@@ -202,5 +216,9 @@ def build_dataset(split: str, args):
 
 
 def build_dataset_with_interval(split: str, args):
-    """示例：按固定间隔抽样，可根据需要定制更复杂逻辑。"""
-    return build_dataset(split, args)
+    """Build dataset and optionally sample it with a fixed interval."""
+    dataset = build_dataset(split, args)
+    interval = getattr(args, "sample_interval", 1)
+    if interval > 1 and split.lower() != "train":
+        dataset = DatasetWithInterval(dataset, interval)
+    return dataset
