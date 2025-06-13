@@ -144,8 +144,23 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
-    parser.add_argument('--use_quaternion_noise', action='store_true', default=True,
-                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if v.lower() in {"yes", "true", "t", "1"}:
+            return True
+        if v.lower() in {"no", "false", "f", "0"}:
+            return False
+        raise argparse.ArgumentTypeError("Boolean value expected")
+
+    parser.add_argument(
+        '--use_quaternion_noise',
+        type=str2bool,
+        nargs='?',
+        const=True,
+        default=False,
+        help='Use quaternion wavelet noise instead of pixel Gaussian',
+    )
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
