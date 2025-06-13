@@ -37,19 +37,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(
-        args.sigma,
-        use_quaternion_noise=args.use_quaternion_noise,
-        levels=args.levels,
-        ratio=args.ratio,
-        device=device,
-    )
-        args.sigma,
-        use_quaternion_noise=args.use_quaternion_noise,
-        levels=args.levels,
-        ratio=args.ratio,
-        device=device,
-    )
+    noised = AddNoise(args.sigma, device=device)
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -101,13 +89,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         loss_value_reduce = misc.all_reduce_mean(loss_value)
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
-    noised = AddNoise(
-        args.sigma,
-        use_quaternion_noise=args.use_quaternion_noise,
-        levels=args.levels,
-        ratio=args.ratio,
-        device=device,
-    )
+            """ We use epoch_1000x as the x-axis in tensorboard.
             This calibrates different curves when batch size changes.
             """
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
@@ -223,25 +205,8 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()
-def evaluate_radius_0(
-    data_loader,
-    model,
-    device,
-    sigma=0.25,
-    *,
-    num_sample=100,
-    stride=50,
-    use_quaternion_noise=True,
-    levels=1,
-    ratio=3.0,
-):
-    noised = AddNoise(
-        sigma,
-        use_quaternion_noise=use_quaternion_noise,
-        levels=levels,
-        ratio=ratio,
-        device=device,
-    )
+def evaluate(data_loader, model, device):
+    criterion = torch.nn.CrossEntropyLoss()
 
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
