@@ -201,11 +201,11 @@ def main(args):
 
     dataset_train = datasets.CIFAR10(root=args.data_path,
                                       train=True,
-                                      download=False,
+                                      download=True,
                                       transform=train_transform)
     dataset_val = datasets.CIFAR10(root=args.data_path,
                                     train=False,
-                                    download=False,
+                                    download=True,
                                     transform=val_transform)
     
     dataset_certify = DatasetWithInterval(dataset_val, 10)
@@ -302,11 +302,6 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
-        for name, param in model.named_parameters():
-            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
-                param.data = param.data.float()
-
 
     elif args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
@@ -325,11 +320,6 @@ def main(args):
         if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, 'state_dict'):
             checkpoint_model = checkpoint_model.state_dict()
 
-        # 若权重以半精度存储，统一转换成 float32
-        for k, v in checkpoint_model.items():
-            if isinstance(v, torch.Tensor):
-                checkpoint_model[k] = v.float()
-
         state_dict = model.state_dict()
 
         # 移除 head 层不匹配的参数
@@ -347,12 +337,7 @@ def main(args):
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
-
-        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
-        for name, param in model.named_parameters():
-            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
-                param.data = param.data.float()
-
+        
         # 放宽断言条件
         allowed_missing = {'head.weight', 'head.bias'}
         if args.global_pool:
@@ -370,8 +355,8 @@ def main(args):
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
-    # 确保模型参数为 float32（避免权重/偏置为 float16 导致与输入 dtype 不匹配）
-    model = model.float().to(device)
+
+    model.to(device)
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -414,43 +399,11 @@ def main(args):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-  # ——— 方案 A：finetune 时在加载完混合精度 checkpoint 后，重新强制 cast 整个模型为 float32 ———
-    if args.distributed:
-        model.module.float()
-    else:
-        model.float()
-
+    
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
-        test_stats = evaluate_radius_0(
-            data_loader_val,
-            model,
-            device,
-            args.sigma,
-            stride=100,
-            use_quaternion_noise=args.use_quaternion_noise,
-            levels=args.levels,
-            ratio=args.ratio,
-        )
-            test_stats_r0 = evaluate_radius_0(
-                data_loader_certify,
-                model,
-                device,
-                args.sigma,
-                stride=25,
-                use_quaternion_noise=args.use_quaternion_noise,
-                levels=args.levels,
-                ratio=args.ratio,
-            )
-            model,
-            device,
-            args.sigma,
-            stride=100,
-            use_quaternion_noise=args.use_quaternion_noise,
-            levels=args.levels,
-            ratio=args.ratio,
-        )
+        test_stats = evaluate_radius_0(data_loader_val, model, device, args.sigma, stride=100)
         print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
@@ -490,16 +443,7 @@ def main(args):
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         if (epoch + 1) % 1 == 0:
-            test_stats_r0 = evaluate_radius_0(
-                data_loader_certify,
-                model,
-                device,
-                args.sigma,
-                stride=25,
-                use_quaternion_noise=args.use_quaternion_noise,
-                levels=args.levels,
-                ratio=args.ratio,
-            )
+            test_stats_r0 = evaluate_radius_0(data_loader_certify, model, device, args.sigma, stride=25)
             print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
             if test_stats_r0['acc1_r0'] > max_r0_accuracy:
                 misc.save_model(
