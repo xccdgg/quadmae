@@ -38,6 +38,29 @@ The following table provides the pre-trained checkpoints used in the paper:
 </tr>
 </tbody></table>
 
+### RCOT Training
+We provide separate scripts for Residual-Conditioned Optimal Transport (RCOT) experiments. The DMAE weights can remain frozen using the `--freeze_base` option.
+
+**ImageNet Example**
+```bash
+python -m torch.distributed.launch --nproc_per_node=8 \
+    main_pretrain_rcot.py \
+    --data_path ${IMAGENET_DIR} \
+    --output_dir ${OUTPUT_DIR} \
+    --freeze_base
+```
+
+**CIFAR-10 Example**
+```bash
+python -m torch.distributed.launch --nproc_per_node=1 \
+    pretrain_cifar10_rcot.py \
+    --data_path ${CIFAR10_DIR} \
+    --output_dir ${OUTPUT_DIR} \
+    --freeze_base
+```
+
+The model architectures are defined in `models_rcot.py`.
+
 ### Fine-tuning
 The fine-tuning and evaluation instruction is in [FINETUNE.md](FINETUNE.md).
 #### Results on ImageNet
