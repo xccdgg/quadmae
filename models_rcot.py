@@ -3,6 +3,8 @@
 import torch
 import torch.nn as nn
 from functools import partial
+import torchvision.transforms as transforms
+import PIL
 
 from models_dmae import DenoisingMaskedAutoencoderViT
 
@@ -119,18 +121,56 @@ class TwoStageDMAE(nn.Module):
             for p in self.base.parameters():
                 p.requires_grad_(False)
 
-    def forward(self, x_noisy: torch.Tensor, x_clean: torch.Tensor | None = None):
+    # ------------------------------------------------------------------
+    def forward(self, imgs: torch.Tensor, mask_ratio: float = 0.75,
+                *, use_rcot: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Pretrain forward that supports optional RCOT refinement."""
+
+        noise = torch.randn_like(imgs) * self.base.sigma
+        imgs_noised = imgs + noise
+        imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
+        imgs_noised = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs_noised)
+
+        if self.base.mean.device != imgs.device:
+            self.base.mean = self.base.mean.to(imgs.device)
+            self.base.std = self.base.std.to(imgs.device)
+
+        imgs_norm = (imgs - self.base.mean) / self.base.std
+        imgs_noised = (imgs_noised - self.base.mean) / self.base.std
+
+        latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
+        pred_tokens = self.base.forward_decoder(latent, ids_restore)
+        loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
+
+        if not use_rcot:
+            return loss1, pred_tokens, mask
+
+        x_hat = self.base.unpatchify(pred_tokens)
+        r = imgs_norm - x_hat
+        cond = self.res_encoder(r)
+        x_refined = self.decoder2(latent, cond)
+        loss2 = ((x_refined - imgs_norm) ** 2).mean()
+        loss = loss1 + loss2
+        pred_refined = self.base.patchify(x_refined)
+        return loss, pred_refined, mask
+
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def restore(self, x_noisy: torch.Tensor, *, use_rcot: bool = True,
+                x_clean: torch.Tensor | None = None) -> torch.Tensor:
+        """Run the two-stage restoration on noisy inputs."""
+
         latent, _, ids_restore = self.base.forward_encoder(x_noisy, mask_ratio=0.0)
         pred_tokens = self.base.forward_decoder(latent, ids_restore)
         x_hat = self.base.unpatchify(pred_tokens)
 
-        if x_clean is not None:
-            r = x_clean - x_hat
-        else:
-            r = x_noisy - x_hat
-        e = self.res_encoder(r)
-        x_refined = self.decoder2(latent, e)
-        return x_hat, x_refined
+        if not use_rcot:
+            return x_hat
+
+        r = (x_clean - x_hat) if x_clean is not None else (x_noisy - x_hat)
+        cond = self.res_encoder(r)
+        x_refined = self.decoder2(latent, cond)
+        return x_refined
 
 
 def rcot_dmae_vit_base_patch16(*, freeze_base: bool = True, **kwargs) -> TwoStageDMAE:

@@ -61,6 +61,19 @@ python -m torch.distributed.launch --nproc_per_node=1 \
 
 The model architectures are defined in `models_rcot.py`.
 
+### RCOT Inference
+After training an RCOT model you can enable or disable the second restoration
+stage during inference:
+
+```python
+from models_rcot import rcot_dmae_vit_base_patch16
+
+model = rcot_dmae_vit_base_patch16()
+noisy = ...  # tensor Bx3xHxW
+refined = model.restore(noisy, use_rcot=True)  # two-stage
+basic = model.restore(noisy, use_rcot=False)   # DMAE only
+```
+
 ### Fine-tuning
 The fine-tuning and evaluation instruction is in [FINETUNE.md](FINETUNE.md).
 #### Results on ImageNet
