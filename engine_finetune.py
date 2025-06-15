@@ -307,7 +307,15 @@ def evaluate_radius_0(
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()
-def certify_evaluate_dist(data_loader, model, device, threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5], num=10000):
+def certify_evaluate_dist(
+    data_loader,
+    model,
+    device,
+    threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
+    num=10000,
+    restorer=None,
+    use_rcot: bool = True,
+):
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
 
@@ -317,6 +325,10 @@ def certify_evaluate_dist(data_loader, model, device, threshold=[0, 0.25, 0.5, 0
         target = batch[-1]
         images = images.to(device, non_blocking=True)
         target = target.to(device, non_blocking=True)
+
+        if restorer is not None:
+            with torch.no_grad():
+                images = restorer.restore(images, use_rcot=use_rcot)
 
         batch_size = images.shape[0]
         assert batch_size == 1

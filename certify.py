@@ -78,6 +78,11 @@ def get_args_parser():
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
 
+    parser.add_argument('--use_rcot', action='store_true',
+                        help='Apply RCOT restoration before certification')
+    parser.add_argument('--rcot_ckpt', default='', type=str,
+                        help='path to RCOT checkpoint')
+
     return parser
 
 
@@ -153,13 +158,30 @@ def main(args):
         model_without_ddp = model.module
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=None, loss_scaler=None)
-    
+
+    restorer = None
+    if args.use_rcot:
+        import models_rcot
+        restorer = models_rcot.rcot_dmae_vit_base_patch16()
+        if args.rcot_ckpt:
+            ckpt = torch.load(args.rcot_ckpt, map_location="cpu")
+            restorer.load_state_dict(ckpt.get("model", ckpt), strict=False)
+        restorer.to(device)
+        restorer.eval()
+
     # switch to evaluation mode
     model.eval()
     threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     if args.sigma:
         smoothed_classifier = Smooth(model, num_classes, args.sigma)
-        test_stats = certify_evaluate_dist(data_loader_val, smoothed_classifier, device, threshold)
+        test_stats = certify_evaluate_dist(
+            data_loader_val,
+            smoothed_classifier,
+            device,
+            threshold,
+            restorer=restorer,
+            use_rcot=args.use_rcot,
+        )
         print('* Load model from {}'.format(args.resume))
         print('* Interval of sampling: {}(number of datapoints: {})'.format(args.sample_interval, len(dataset_val)))
         print('* Randomized smoothing with sigma {}'.format(args.sigma))
@@ -171,7 +193,14 @@ def main(args):
     else: # test on sigma = (0.25, 0.5, 1.0)
         for sigma in [0.25, 0.5, 1.0]:
             smoothed_classifier = Smooth(model, num_classes, sigma)
-            test_stats = certify_evaluate_dist(data_loader_val, smoothed_classifier, device, threshold)
+            test_stats = certify_evaluate_dist(
+                data_loader_val,
+                smoothed_classifier,
+                device,
+                threshold,
+                restorer=restorer,
+                use_rcot=args.use_rcot,
+            )
             print('* Load model from {}'.format(args.resume))
             print('* Interval of sampling: {}(number of datapoints: {})'.format(args.sample_interval, len(dataset_val)))
             print('* Randomized smoothing with sigma {}'.format(sigma))

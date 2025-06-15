@@ -156,21 +156,48 @@ class TwoStageDMAE(nn.Module):
 
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def restore(self, x_noisy: torch.Tensor, *, use_rcot: bool = True,
-                x_clean: torch.Tensor | None = None) -> torch.Tensor:
-        """Run the two-stage restoration on noisy inputs."""
+    def restore(
+        self,
+        x_noisy: torch.Tensor,
+        *,
+        use_rcot: bool = True,
+        x_clean: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Restore noisy input.  Returns pixel-domain images."""
 
-        latent, _, ids_restore = self.base.forward_encoder(x_noisy, mask_ratio=0.0)
+        if x_noisy.shape[-1] != self.base.patch_embed.img_size:
+            x_noisy = transforms.Resize(
+                self.base.patch_embed.img_size,
+                interpolation=PIL.Image.BICUBIC,
+            )(x_noisy)
+
+        if self.base.mean.device != x_noisy.device:
+            self.base.mean = self.base.mean.to(x_noisy.device)
+            self.base.std = self.base.std.to(x_noisy.device)
+
+        x_norm = (x_noisy - self.base.mean) / self.base.std
+
+        latent, _, ids_restore = self.base.forward_encoder(x_norm, mask_ratio=0.0)
         pred_tokens = self.base.forward_decoder(latent, ids_restore)
         x_hat = self.base.unpatchify(pred_tokens)
 
         if not use_rcot:
-            return x_hat
+            return x_hat * self.base.std + self.base.mean
 
-        r = (x_clean - x_hat) if x_clean is not None else (x_noisy - x_hat)
+        if x_clean is not None:
+            if x_clean.shape[-1] != self.base.patch_embed.img_size:
+                x_clean = transforms.Resize(
+                    self.base.patch_embed.img_size,
+                    interpolation=PIL.Image.BICUBIC,
+                )(x_clean)
+            x_clean = (x_clean - self.base.mean) / self.base.std
+            r = x_clean - x_hat
+        else:
+            r = x_norm - x_hat
+
         cond = self.res_encoder(r)
         x_refined = self.decoder2(latent, cond)
-        return x_refined
+        return x_refined * self.base.std + self.base.mean
 
 
 def rcot_dmae_vit_base_patch16(*, freeze_base: bool = True, **kwargs) -> TwoStageDMAE:
