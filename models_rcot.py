@@ -97,9 +97,24 @@ class ConditionalDecoder(nn.Module):
         ])
         self.norm = nn.LayerNorm(embed_dim)
         self.out_proj = nn.Linear(embed_dim, patch_size * patch_size * 3)
-        self.patch_size = patch_size
+    def _decoder_features(self, latent: torch.Tensor, ids_restore: torch.Tensor) -> torch.Tensor:
+        """Return decoder token features before prediction."""
+        x = self.base.decoder_embed(latent)
+        mask_tokens = self.base.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
+        x = torch.cat([x[:, :1, :], x_], dim=1)
+        x = x + self.base.decoder_pos_embed
+        for blk in self.base.decoder_blocks:
+            x = blk(x)
+        x = self.base.decoder_norm(x)
+        return x[:, 1:, :]
 
-    def forward(self, tokens: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        tokens2 = self._decoder_features(latent, ids_restore)
+        x_refined = self.decoder2(tokens2, cond)
+
+        tokens2 = self._decoder_features(latent, ids_restore)
+        x_refined = self.decoder2(tokens2, cond)
         x = tokens + self.pos_embed[:, :tokens.size(1), :]
         for blk in self.blocks:
             x = blk(x, cond)
