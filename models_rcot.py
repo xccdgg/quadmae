@@ -5,6 +5,7 @@ import torch.nn as nn
 from functools import partial
 import torchvision.transforms as transforms
 import PIL
+from typing import Optional, Tuple
 
 from models_dmae import DenoisingMaskedAutoencoderViT
 
@@ -53,7 +54,7 @@ class FiLMBlock(nn.Module):
 class ConditionalTransformerBlock(nn.Module):
     """Transformer block with FiLM conditioning."""
 
-    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4.0, cond_dim: int | None = None):
+    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4.0, cond_dim: Optional[int] = None):
         super().__init__()
         self.norm1 = nn.LayerNorm(embed_dim)
         self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
@@ -66,7 +67,7 @@ class ConditionalTransformerBlock(nn.Module):
         )
         self.film = FiLMBlock(cond_dim or embed_dim, embed_dim)
 
-    def forward(self, x: torch.Tensor, cond: torch.Tensor | None = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
         attn_out, _ = self.attn(self.norm1(x), self.norm1(x), self.norm1(x))
         x = x + attn_out
         ffn_out = self.ffn(self.norm2(x))
@@ -80,7 +81,7 @@ class ConditionalDecoder(nn.Module):
     """Decoder composed of conditional transformer blocks."""
 
     def __init__(self, embed_dim: int = 512, num_layers: int = 8, num_heads: int = 8,
-                 mlp_ratio: float = 4.0, cond_dim: int | None = None,
+                 mlp_ratio: float = 4.0, cond_dim: Optional[int] = None,
                  patch_size: int = 16, image_size: int = 224):
         super().__init__()
         num_patches = (image_size // patch_size) ** 2
@@ -122,8 +123,13 @@ class TwoStageDMAE(nn.Module):
                 p.requires_grad_(False)
 
     # ------------------------------------------------------------------
-    def forward(self, imgs: torch.Tensor, mask_ratio: float = 0.75,
-                *, use_rcot: bool = True) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        imgs: torch.Tensor,
+        mask_ratio: float = 0.75,
+        *,
+        use_rcot: bool = True,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pretrain forward that supports optional RCOT refinement."""
 
         noise = torch.randn_like(imgs) * self.base.sigma
@@ -161,7 +167,7 @@ class TwoStageDMAE(nn.Module):
         x_noisy: torch.Tensor,
         *,
         use_rcot: bool = True,
-        x_clean: torch.Tensor | None = None,
+        x_clean: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Restore noisy input.  Returns pixel-domain images."""
 

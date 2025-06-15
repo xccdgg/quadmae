@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import torch
@@ -68,7 +68,7 @@ class Smooth(nn.Module):
         *,
         levels: int = 1,
         ratio: float = 3.0,
-        device: str | torch.device | None = None,
+        device: Optional[Union[str, torch.device]] = None,
     ) -> None:
         super().__init__()
         self.base_classifier = base_classifier.eval()

@@ -21,7 +21,7 @@ def _to_bool(v: Any) -> bool:
     return bool(v)
 
 import math
-from typing import Any, Tuple
+from typing import Any, Tuple, Optional
 
 import numpy as np
 from PIL import Image                     # noqa: F401  (备用：自定义数据集)
@@ -53,7 +53,7 @@ class AddNoise:
         σ_H / σ_L。
     device : str / torch.device, default "cpu"
         生成噪声张量所在设备。
-    soft_limit : float | None
+    soft_limit : Optional[float]
         若给定，则对加噪后像素做 SoftClamp；默认自动设成 3 σ_pix。
     """
 
@@ -65,14 +65,14 @@ class AddNoise:
         levels: int = 1,
         ratio: float = 3.0,
         device: Any = "cpu",
-        soft_limit: float | None = None,
+        soft_limit: Optional[float] = None,
     ) -> None:
         self.sigma_pix:   float = float(sigma)
         self.use_qwt     = _to_bool(use_quaternion_noise)
         self.levels:     int   = int(levels)
         self.ratio:      float = float(ratio)
         self.device                = torch.device(device)
-        self.soft_limit: float | None = soft_limit if soft_limit is not None else (
+        self.soft_limit: Optional[float] = soft_limit if soft_limit is not None else (
             3.0 * self.sigma_pix if self.sigma_pix > 0 else None
         )
         self.soft_clamp = SoftClamp(self.soft_limit) if self.soft_limit else lambda x: x
