@@ -74,6 +74,19 @@ refined = model.restore(noisy, use_rcot=True)  # two-stage
 basic = model.restore(noisy, use_rcot=False)   # DMAE only
 ```
 
+### Certification
+We provide scripts to measure randomized smoothing certified accuracy.
+
+```bash
+python certify.py \
+    --resume PATH_TO_CHECKPOINT \
+    --sigma 0.5 \
+    --use_rcot --rcot_ckpt PATH_TO_RCOT
+```
+
+For CIFAR-10, use `certify_cifar10.py` with the same options.
+
+
 ### Fine-tuning
 The fine-tuning and evaluation instruction is in [FINETUNE.md](FINETUNE.md).
 #### Results on ImageNet
