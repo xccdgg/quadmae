@@ -150,7 +150,8 @@ class TwoStageDMAE(nn.Module):
         imgs_noised = (imgs_noised - self.base.mean) / self.base.std
 
         latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
-        pred_tokens = self.base.forward_decoder(latent, ids_restore)
+        dec_feats = self.base.forward_decoder_features(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(dec_feats)[:, 1:, :]
         loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
 
         if not use_rcot:
@@ -159,7 +160,7 @@ class TwoStageDMAE(nn.Module):
         x_hat = self.base.unpatchify(pred_tokens)
         r = imgs_norm - x_hat
         cond = self.res_encoder(r)
-        x_refined = self.decoder2(latent, cond)
+        x_refined = self.decoder2(dec_feats[:, 1:, :], cond)
         loss2 = ((x_refined - imgs_norm) ** 2).mean()
         loss = loss1 + loss2
         pred_refined = self.base.patchify(x_refined)
@@ -189,7 +190,8 @@ class TwoStageDMAE(nn.Module):
         x_norm = (x_noisy - self.base.mean) / self.base.std
 
         latent, _, ids_restore = self.base.forward_encoder(x_norm, mask_ratio=0.0)
-        pred_tokens = self.base.forward_decoder(latent, ids_restore)
+        dec_feats = self.base.forward_decoder_features(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(dec_feats)[:, 1:, :]
         x_hat = self.base.unpatchify(pred_tokens)
 
         if not use_rcot:
@@ -207,7 +209,7 @@ class TwoStageDMAE(nn.Module):
             r = x_norm - x_hat
 
         cond = self.res_encoder(r)
-        x_refined = self.decoder2(latent, cond)
+        x_refined = self.decoder2(dec_feats[:, 1:, :], cond)
         return x_refined * self.base.std + self.base.mean
 
 
