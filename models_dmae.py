@@ -57,6 +57,10 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         self.norm_pix_loss = norm_pix_loss
 
         self.initialize_weights()
+        # models_dmae.py 中 DenoisingMaskedAutoencoderViT.__init__ 的末尾
+        self.decoder_embed_dim = decoder_embed_dim
+        self.decoder_depth = decoder_depth
+        self.decoder_num_heads = decoder_num_heads
 
     def initialize_weights(self):
         # initialization

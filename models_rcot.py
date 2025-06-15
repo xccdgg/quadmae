@@ -5,7 +5,8 @@ import torch.nn as nn
 from functools import partial
 import torchvision.transforms as transforms
 import PIL
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
+
 
 from models_dmae import DenoisingMaskedAutoencoderViT
 
@@ -82,9 +83,13 @@ class ConditionalDecoder(nn.Module):
 
     def __init__(self, embed_dim: int = 512, num_layers: int = 8, num_heads: int = 8,
                  mlp_ratio: float = 4.0, cond_dim: Optional[int] = None,
-                 patch_size: int = 16, image_size: int = 224):
+                 patch_size: int = 16, image_size: Union[int, Tuple[int,int]] = 224):
         super().__init__()
-        num_patches = (image_size // patch_size) ** 2
+        if isinstance(image_size, (tuple, list)):
+            h, w = image_size
+        else:
+            h = w = image_size
+        num_patches = (h // patch_size) * (w // patch_size)
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.blocks = nn.ModuleList([
             ConditionalTransformerBlock(embed_dim, num_heads, mlp_ratio, cond_dim)
