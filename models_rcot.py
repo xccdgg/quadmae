@@ -79,17 +79,19 @@ class ConditionalTransformerBlock(nn.Module):
 
 
 class ConditionalDecoder(nn.Module):
-    """Decoder composed of conditional transformer blocks."""
+    """Transformer decoder with FiLM conditioning producing images."""
 
     def __init__(self, embed_dim: int = 512, num_layers: int = 8, num_heads: int = 8,
                  mlp_ratio: float = 4.0, cond_dim: Optional[int] = None,
-                 patch_size: int = 16, image_size: Union[int, Tuple[int,int]] = 224):
+                 patch_size: int = 16, image_size: Union[int, Tuple[int, int]] = 224):
         super().__init__()
+
         if isinstance(image_size, (tuple, list)):
             h, w = image_size
         else:
             h = w = image_size
         num_patches = (h // patch_size) * (w // patch_size)
+
         self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
         self.blocks = nn.ModuleList([
             ConditionalTransformerBlock(embed_dim, num_heads, mlp_ratio, cond_dim)
@@ -97,25 +99,12 @@ class ConditionalDecoder(nn.Module):
         ])
         self.norm = nn.LayerNorm(embed_dim)
         self.out_proj = nn.Linear(embed_dim, patch_size * patch_size * 3)
-    def _decoder_features(self, latent: torch.Tensor, ids_restore: torch.Tensor) -> torch.Tensor:
-        """Return decoder token features before prediction."""
-        x = self.base.decoder_embed(latent)
-        mask_tokens = self.base.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
-        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)
-        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
-        x = torch.cat([x[:, :1, :], x_], dim=1)
-        x = x + self.base.decoder_pos_embed
-        for blk in self.base.decoder_blocks:
-            x = blk(x)
-        x = self.base.decoder_norm(x)
-        return x[:, 1:, :]
+        self.patch_size = patch_size
 
-        tokens2 = self._decoder_features(latent, ids_restore)
-        x_refined = self.decoder2(tokens2, cond)
+    def forward(self, tokens: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
+        """Decode token features into an image conditioned on ``cond``."""
 
-        tokens2 = self._decoder_features(latent, ids_restore)
-        x_refined = self.decoder2(tokens2, cond)
-        x = tokens + self.pos_embed[:, :tokens.size(1), :]
+        x = tokens + self.pos_embed[:, : tokens.size(1), :]
         for blk in self.blocks:
             x = blk(x, cond)
         x = self.norm(x)
@@ -142,6 +131,24 @@ class TwoStageDMAE(nn.Module):
             for p in self.base.parameters():
                 p.requires_grad_(False)
 
+        # Initialize conditional decoder positional embedding from the base decoder
+        if self.decoder2.pos_embed.shape == (1, self.base.decoder_pos_embed.shape[1] - 1, self.base.decoder_pos_embed.shape[2]):
+            with torch.no_grad():
+                self.decoder2.pos_embed.copy_(self.base.decoder_pos_embed[:, 1:, :])
+
+    def _decoder_tokens(self, latent: torch.Tensor, ids_restore: torch.Tensor) -> torch.Tensor:
+        """Return decoder token features of the first stage before prediction."""
+        x = self.base.decoder_embed(latent)
+        mask_tokens = self.base.mask_token.repeat(x.shape[0], ids_restore.shape[1] + 1 - x.shape[1], 1)
+        x_ = torch.cat([x[:, 1:, :], mask_tokens], dim=1)
+        x_ = torch.gather(x_, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[2]))
+        x = torch.cat([x[:, :1, :], x_], dim=1)
+        x = x + self.base.decoder_pos_embed
+        for blk in self.base.decoder_blocks:
+            x = blk(x)
+        x = self.base.decoder_norm(x)
+        return x
+
     # ------------------------------------------------------------------
     def forward(
         self,
@@ -165,7 +172,9 @@ class TwoStageDMAE(nn.Module):
         imgs_noised = (imgs_noised - self.base.mean) / self.base.std
 
         latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
-        pred_tokens = self.base.forward_decoder(latent, ids_restore)
+        features = self._decoder_tokens(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(features)
+        pred_tokens = pred_tokens[:, 1:, :]
         loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
 
         if not use_rcot:
@@ -174,7 +183,8 @@ class TwoStageDMAE(nn.Module):
         x_hat = self.base.unpatchify(pred_tokens)
         r = imgs_norm - x_hat
         cond = self.res_encoder(r)
-        x_refined = self.decoder2(latent, cond)
+        tokens2 = features[:, 1:, :]
+        x_refined = self.decoder2(tokens2, cond)
         loss2 = ((x_refined - imgs_norm) ** 2).mean()
         loss = loss1 + loss2
         pred_refined = self.base.patchify(x_refined)
@@ -204,7 +214,9 @@ class TwoStageDMAE(nn.Module):
         x_norm = (x_noisy - self.base.mean) / self.base.std
 
         latent, _, ids_restore = self.base.forward_encoder(x_norm, mask_ratio=0.0)
-        pred_tokens = self.base.forward_decoder(latent, ids_restore)
+        features = self._decoder_tokens(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(features)
+        pred_tokens = pred_tokens[:, 1:, :]
         x_hat = self.base.unpatchify(pred_tokens)
 
         if not use_rcot:
@@ -222,7 +234,8 @@ class TwoStageDMAE(nn.Module):
             r = x_norm - x_hat
 
         cond = self.res_encoder(r)
-        x_refined = self.decoder2(latent, cond)
+        tokens2 = features[:, 1:, :]
+        x_refined = self.decoder2(tokens2, cond)
         return x_refined * self.base.std + self.base.mean
 
 
@@ -248,5 +261,9 @@ def rcot_dmae_vit_base_patch16(*, freeze_base: bool = True, **kwargs) -> TwoStag
         patch_size=base.patch_embed.patch_size[0],
         image_size=base.patch_embed.img_size,
     )
+    # initialize output projection and normalization from the first stage decoder
+    cond_decoder.norm.load_state_dict(base.decoder_norm.state_dict())
+    cond_decoder.out_proj.weight.data.copy_(base.decoder_pred.weight.data)
+    cond_decoder.out_proj.bias.data.copy_(base.decoder_pred.bias.data)
     res_enc = ResidualEncoder(in_channels=3, embed_dim=base.decoder_embed_dim)
     return TwoStageDMAE(base, cond_decoder, res_enc, freeze_base=freeze_base)
