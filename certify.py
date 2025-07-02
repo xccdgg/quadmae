@@ -183,7 +183,14 @@ def main(args):
     model.eval()
     threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     if args.sigma:
-        smoothed_classifier = Smooth(model, num_classes, args.sigma)
+        smoothed_classifier = Smooth(
+            model,
+            num_classes,
+            args.sigma,
+            use_quaternion_noise=args.use_quaternion_noise,
+            levels=args.levels,
+            ratio=args.ratio,
+        )
         test_stats = certify_evaluate_dist(
             data_loader_val,
             smoothed_classifier,
@@ -202,7 +209,14 @@ def main(args):
                 acc=test_stats['Acc@r={radius:.2f}'.format(radius=thres)]))
     else: # test on sigma = (0.25, 0.5, 1.0)
         for sigma in [0.25, 0.5, 1.0]:
-            smoothed_classifier = Smooth(model, num_classes, sigma)
+            smoothed_classifier = Smooth(
+                model,
+                num_classes,
+                sigma,
+                use_quaternion_noise=args.use_quaternion_noise,
+                levels=args.levels,
+                ratio=args.ratio,
+            )
             test_stats = certify_evaluate_dist(
                 data_loader_val,
                 smoothed_classifier,

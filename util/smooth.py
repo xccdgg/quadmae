@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import numpy as np
 import torch
@@ -23,6 +23,16 @@ import torch.nn.functional as F
 from scipy.stats import beta, norm
 
 from util.quadatasetgpu import QuaternionWaveletNoise
+
+def _to_bool(v: Any) -> bool:
+    """Robust bool conversion for cli strings."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return bool(v)
+    if isinstance(v, str):
+        return v.lower() in {"1", "true", "yes", "t"}
+    return bool(v)
 
 __all__ = ["Smooth"]
 
@@ -66,6 +76,7 @@ class Smooth(nn.Module):
         num_classes: int,
         sigma: float,
         *,
+        use_quaternion_noise: bool = True,
         levels: int = 1,
         ratio: float = 3.0,
         device: Optional[Union[str, torch.device]] = None,
@@ -74,6 +85,7 @@ class Smooth(nn.Module):
         self.base_classifier = base_classifier.eval()
         self.num_classes = num_classes
         self.sigma_pix = float(sigma)
+        self.use_qwt = _to_bool(use_quaternion_noise)
         self.ratio = float(ratio)
         self.levels = int(levels)
 
@@ -81,11 +93,19 @@ class Smooth(nn.Module):
         self.soft_limit = 3.0 * self.sigma_pix if self.sigma_pix > 0 else 0.0
         self.soft_clamp = SoftClamp(self.soft_limit) if self.soft_limit > 0 else nn.Identity()
 
-        # 像素 σ → QWT σ_total → σ_L, σ_H
-        self.sigma_total = _sigma_total_from_pixel(self.sigma_pix, self.ratio)
-        self.sigma_low = self.sigma_total / (1.0 + self.ratio)
-        self.sigma_high = self.sigma_low * self.ratio
-        self.sigma_min = min(self.sigma_low, self.sigma_high)
+        # 噪声参数 -------------------------------------------------------
+        if self.use_qwt:
+            # 像素 σ → QWT σ_total → σ_L, σ_H
+            self.sigma_total = _sigma_total_from_pixel(self.sigma_pix, self.ratio)
+            self.sigma_low = self.sigma_total / (1.0 + self.ratio)
+            self.sigma_high = self.sigma_low * self.ratio
+            self.sigma_min = min(self.sigma_low, self.sigma_high)
+        else:
+            # 传统像素高斯
+            self.sigma_total = self.sigma_pix
+            self.sigma_low = self.sigma_pix
+            self.sigma_high = self.sigma_pix
+            self.sigma_min = self.sigma_pix
 
         # device ---------------------------------------------------------
         if device is None:
@@ -96,11 +116,16 @@ class Smooth(nn.Module):
         self.device = torch.device(device)
 
         # 记录参数 --------------------------------------------------------
-        print(
-            f"[Smooth] σ_pix={self.sigma_pix:.4f}  σ_total={self.sigma_total:.4f} "
-            f"σ_L={self.sigma_low:.4f}  σ_H={self.sigma_high:.4f}  ratio={self.ratio}  "
-            f"soft_limit={self.soft_limit:.4f}"
-        )
+        if self.use_qwt:
+            print(
+                f"[Smooth] QWT σ_pix={self.sigma_pix:.4f}  σ_total={self.sigma_total:.4f} "
+                f"σ_L={self.sigma_low:.4f}  σ_H={self.sigma_high:.4f}  ratio={self.ratio}  "
+                f"soft_limit={self.soft_limit:.4f}"
+            )
+        else:
+            print(
+                f"[Smooth] Gaussian σ_pix={self.sigma_pix:.4f}  soft_limit={self.soft_limit:.4f}"
+            )
 
         # 推断输入分辨率 (ViT / Conv)
         try:
@@ -126,15 +151,18 @@ class Smooth(nn.Module):
     # core: add noise + soft‑clamp -------------------------------------
     # ------------------------------------------------------------------
     def _add_noise(self, imgs: torch.Tensor) -> torch.Tensor:
-        noised = QuaternionWaveletNoise.apply_noise(
-            imgs,
-            sigma=self.sigma_total,
-            filter_name="haar",
-            levels=self.levels,
-            ratio=self.ratio,
-            device=self.device,
-        )
-        return self.soft_clamp(noised)
+        if self.use_qwt:
+            noised = QuaternionWaveletNoise.apply_noise(
+                imgs,
+                sigma=self.sigma_total,
+                filter_name="haar",
+                levels=self.levels,
+                ratio=self.ratio,
+                device=self.device,
+            )
+            return self.soft_clamp(noised)
+        noise = torch.randn_like(imgs) * self.sigma_pix
+        return (imgs + noise).clamp(0.0, 1.0)
 
     # ------------------------------------------------------------------
     # predict -----------------------------------------------------------
