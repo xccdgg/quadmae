@@ -244,7 +244,7 @@ class NativeScalerWithGradNormCount:
     def __init__(self):
         try:
             self._scaler = torch.amp.GradScaler(device_type="cuda")
-        except AttributeError:
+        except (AttributeError, TypeError):
             self._scaler = torch.cuda.amp.GradScaler()
 
     def __call__(self, loss, optimizer, clip_grad=None, parameters=None, create_graph=False, update_grad=True):
