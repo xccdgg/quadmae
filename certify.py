@@ -101,7 +101,7 @@ def main(args):
 
     cudnn.benchmark = True
 
-    dataset_val = build_dataset_with_interval(is_train=False, args=args)
+    dataset_val = build_dataset_with_interval("val", args)
 
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
