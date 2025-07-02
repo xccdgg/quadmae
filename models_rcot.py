@@ -239,7 +239,9 @@ class TwoStageDMAE(nn.Module):
         return x_refined * self.base.std + self.base.mean
 
 
-def rcot_dmae_vit_base_patch16(*, freeze_base: bool = True, **kwargs) -> TwoStageDMAE:
+def rcot_dmae_vit_base_patch16(
+    *, freeze_base: bool = True, dmae_ckpt: Optional[str] = None, **kwargs
+) -> TwoStageDMAE:
     base = DenoisingMaskedAutoencoderViT(
         patch_size=16,
         embed_dim=768,
@@ -252,6 +254,14 @@ def rcot_dmae_vit_base_patch16(*, freeze_base: bool = True, **kwargs) -> TwoStag
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         **kwargs,
     )
+    if dmae_ckpt:
+        ckpt = torch.load(dmae_ckpt, map_location="cpu")
+        state = ckpt.get("model", ckpt)
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.float()
+        msg = base.load_state_dict(state, strict=False)
+        print(f"Loaded DMAE weights from {dmae_ckpt}")
     cond_decoder = ConditionalDecoder(
         embed_dim=base.decoder_embed_dim,
         num_layers=len(base.decoder_blocks),

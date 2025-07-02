@@ -47,6 +47,7 @@ python -m torch.distributed.launch --nproc_per_node=8 \
     main_pretrain_rcot.py \
     --data_path ${IMAGENET_DIR} \
     --output_dir ${OUTPUT_DIR} \
+    --dmae_ckpt path/to/dmae_pretrain.pth \
     --freeze_base
 ```
 
@@ -56,6 +57,7 @@ python -m torch.distributed.launch --nproc_per_node=1 \
     pretrain_cifar10_rcot.py \
     --data_path ${CIFAR10_DIR} \
     --output_dir ${OUTPUT_DIR} \
+    --dmae_ckpt path/to/dmae_pretrain.pth \
     --freeze_base
 ```
 

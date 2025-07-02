@@ -53,6 +53,8 @@ def get_args_parser():
     parser.add_argument('--freeze_base', action='store_true',
                         help='Freeze the underlying DMAE weights')
     parser.set_defaults(freeze_base=True)
+    parser.add_argument('--dmae_ckpt', default='',
+                        help='path to pretrained DMAE checkpoint')
 
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -156,9 +158,12 @@ def main(args):
     )
     
     # define the model
-    model = models_rcot.__dict__[args.model](norm_pix_loss=args.norm_pix_loss,
-                                            sigma=args.sigma,
-                                            freeze_base=args.freeze_base)
+    model = models_rcot.__dict__[args.model](
+        norm_pix_loss=args.norm_pix_loss,
+        sigma=args.sigma,
+        freeze_base=args.freeze_base,
+        dmae_ckpt=args.dmae_ckpt if args.dmae_ckpt else None,
+    )
     model.mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, 3, 1, 1)
     model.std = torch.tensor([0.2471, 0.2435, 0.2616]).reshape(1, 3, 1, 1)
 
