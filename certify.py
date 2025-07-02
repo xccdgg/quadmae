@@ -77,6 +77,12 @@ def get_args_parser():
                         help='standard deviation for randomized smoothing')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
+    parser.add_argument('--use_quaternion_noise', action='store_true',
+                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    parser.add_argument('--levels', default=1, type=int,
+                        help='Levels of QWT decomposition for noise')
+    parser.add_argument('--ratio', default=3.0, type=float,
+                        help='Sigma_H / Sigma_L ratio for QWT noise')
 
     parser.add_argument('--use_rcot', action='store_true',
                         help='Apply RCOT restoration before certification')
