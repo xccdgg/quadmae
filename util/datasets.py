@@ -28,8 +28,9 @@ from PIL import Image                     # noqa: F401  (备用：自定义数�
 import torch
 from torch import Tensor
 from torch.utils.data import Dataset, DataLoader
+import os
 from torchvision import transforms
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, ImageFolder
 from util.smooth import _sigma_total_from_pixel
 from util.quadatasetgpu import QuaternionWaveletNoise
 from util.softclamp     import SoftClamp         # 软饱和单独放在 util/softclamp.py
@@ -201,8 +202,19 @@ class DatasetWithInterval(Dataset):
 # build_dataset / build_dataset_with_interval  ------------------------------
 # ---------------------------------------------------------------------------
 def build_dataset(split: str, args):
-    """下游微调/评估用 CIFAR-10；split ∈ {'train','val','test'}"""
-    is_train = (split.lower() == "train")
+    """Build dataset for fine-tuning and evaluation."""
+    is_train = split.lower() == "train"
+
+    # ImageNet detection based on number of classes
+    if getattr(args, "nb_classes", 10) == 1000:
+        root = os.path.join(args.data_path, "train" if is_train else "val")
+        transform = transforms.Compose([
+            transforms.Resize((args.input_size, args.input_size)),
+            transforms.ToTensor(),
+        ])
+        return ImageFolder(root=root, transform=transform)
+
+    # Default to CIFAR-10
     return NoisyImageDataset(
         data_root=args.data_path,
         train=is_train,
