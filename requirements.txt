@@ -18,6 +18,7 @@ tensorboard
 tensorboard-data-server>=0.7.2
 tensorboardX>=2.6.2
 timm==0.5.4
+matplotlib
 
 # 4. 其余常用依赖（pip 会自动选取兼容 Python 3.12 的最新可用版本）
 Markdown

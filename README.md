@@ -76,6 +76,16 @@ refined = model.restore(noisy, use_rcot=True)  # two-stage
 basic = model.restore(noisy, use_rcot=False)   # DMAE only
 ```
 
+### Visualizing Restoration
+You can visualize the effect of RCOT on a single image using `visualize_rcot.py`:
+
+```bash
+python visualize_rcot.py \
+    --img path/to/image.jpg \
+    --ckpt PATH_TO_RCOT_CHECKPOINT \
+    --dmae_ckpt PATH_TO_DMAE_CHECKPOINT
+```
+
 ### Certification
 We provide scripts to measure randomized smoothing certified accuracy.
 
