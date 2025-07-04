@@ -52,7 +52,7 @@ python -m torch.distributed.launch --nproc_per_node=1 \
     --norm_pix_loss \
     --mask_ratio 0.75 \
     --sigma 0.25 \
-    --epoch_start 0 --epochs 50 \
+    --start_epoch 0 --epochs 50 \
     --warmup_epochs 10 \
     --blr 5e-5 --weight_decay 0.05
 ```
