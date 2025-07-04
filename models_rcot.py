@@ -159,17 +159,15 @@ class TwoStageDMAE(nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Pretrain forward that supports optional RCOT refinement."""
 
-        noise = torch.randn_like(imgs) * self.base.sigma
-        imgs_noised = imgs + noise
         imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
-        imgs_noised = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs_noised)
 
         if self.base.mean.device != imgs.device:
             self.base.mean = self.base.mean.to(imgs.device)
             self.base.std = self.base.std.to(imgs.device)
 
         imgs_norm = (imgs - self.base.mean) / self.base.std
-        imgs_noised = (imgs_noised - self.base.mean) / self.base.std
+        noise = torch.randn_like(imgs_norm) * self.base.sigma
+        imgs_noised = imgs_norm + noise
 
         latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
         features = self._decoder_tokens(latent, ids_restore)
@@ -220,7 +218,7 @@ class TwoStageDMAE(nn.Module):
         x_hat = self.base.unpatchify(pred_tokens)
 
         if not use_rcot:
-            return x_hat * self.base.std + self.base.mean
+            return (x_hat * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
         if x_clean is not None:
             if x_clean.shape[-1] != self.base.patch_embed.img_size:
@@ -236,7 +234,7 @@ class TwoStageDMAE(nn.Module):
         cond = self.res_encoder(r)
         tokens2 = features[:, 1:, :]
         x_refined = self.decoder2(tokens2, cond)
-        return x_refined * self.base.std + self.base.mean
+        return (x_refined * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
 
 def rcot_dmae_vit_base_patch16(
