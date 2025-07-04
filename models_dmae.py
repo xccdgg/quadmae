@@ -220,22 +220,20 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
-        # add noise 
-        noise = torch.randn_like(imgs) * self.sigma
-        imgs_noised = imgs + noise
+        """Forward with noise injected after normalization."""
         imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
-        imgs_noised = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs_noised)
 
-        # normalization
         if self.mean.device != imgs.device:
             self.mean = self.mean.to(imgs.device)
             self.std = self.std.to(imgs.device)
-        imgs = (imgs - self.mean) / self.std
-        imgs_noised = (imgs_noised - self.mean) / self.std
+
+        imgs_norm = (imgs - self.mean) / self.std
+        noise_norm = torch.randn_like(imgs_norm) * (self.sigma / self.std)
+        imgs_noised = imgs_norm + noise_norm
 
         latent, mask, ids_restore = self.forward_encoder(imgs_noised, mask_ratio)
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs, pred, mask)
+        loss = self.forward_loss(imgs_norm, pred, mask)
         return loss, pred, mask
 
 
