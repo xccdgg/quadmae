@@ -5,6 +5,7 @@ import argparse
 from pathlib import Path
 
 import torch
+import numpy as np
 from PIL import Image
 import torchvision.transforms as T
 
@@ -70,8 +71,16 @@ def main() -> None:
     with torch.no_grad():
         restored = model.restore(noisy, use_rcot=not args.no_rcot)
 
-    def to_np(t):
-        return t.squeeze(0).permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+    def to_np(t: torch.Tensor) -> np.ndarray:
+        """Convert a tensor image to a NumPy array Matplotlib can plot."""
+        return (
+            t.squeeze(0)
+            .float()
+            .permute(1, 2, 0)
+            .clamp(0, 1)
+            .cpu()
+            .numpy()
+        )
 
     import matplotlib.pyplot as plt
 
