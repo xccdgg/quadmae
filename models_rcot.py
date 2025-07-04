@@ -175,9 +175,8 @@ class TwoStageDMAE(nn.Module):
             self.base.mean = self.base.mean.to(imgs.device)
             self.base.std = self.base.std.to(imgs.device)
 
-        imgs_norm = (imgs - self.base.mean) / self.base.std
-
         if self.use_quaternion_noise:
+            imgs_norm = (imgs - self.base.mean) / self.base.std
             sigma_pix_norm = (self.base.sigma / self.base.std.mean()).item()
             sigma_total = _sigma_total_from_pixel(sigma_pix_norm, self.ratio)
             imgs_noised = QuaternionWaveletNoise.apply_noise(
@@ -188,12 +187,14 @@ class TwoStageDMAE(nn.Module):
                 ratio=self.ratio,
                 device=imgs_norm.device,
             )
+            imgs_noised_norm = imgs_noised
         else:
-            sigma_norm = self.base.sigma / self.base.std
-            noise = torch.randn_like(imgs_norm) * sigma_norm
-            imgs_noised = imgs_norm + noise
+            noise = torch.randn_like(imgs) * self.base.sigma
+            imgs_noised = (imgs + noise).clamp(0.0, 1.0)
+            imgs_norm = (imgs - self.base.mean) / self.base.std
+            imgs_noised_norm = (imgs_noised - self.base.mean) / self.base.std
 
-        latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
+        latent, mask, ids_restore = self.base.forward_encoder(imgs_noised_norm, mask_ratio)
         features = self._decoder_tokens(latent, ids_restore)
         pred_tokens = self.base.decoder_pred(features)
         pred_tokens = pred_tokens[:, 1:, :]
