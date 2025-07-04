@@ -49,6 +49,12 @@ def get_args_parser():
 
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
+    parser.add_argument('--use_quaternion_noise', default=False,
+                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    parser.add_argument('--levels', default=1, type=int,
+                        help='Levels of QWT decomposition for noise')
+    parser.add_argument('--ratio', default=3.0, type=float,
+                        help='Sigma_H / Sigma_L ratio for QWT noise')
 
     parser.add_argument('--freeze_base', action='store_true',
                         help='Freeze the underlying DMAE weights')
@@ -159,6 +165,9 @@ def main(args):
         sigma=args.sigma,
         freeze_base=args.freeze_base,
         dmae_ckpt=args.dmae_ckpt if args.dmae_ckpt else None,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
     )
 
     model.to(device)

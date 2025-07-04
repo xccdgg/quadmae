@@ -7,6 +7,9 @@ import torchvision.transforms as transforms
 import PIL
 from typing import Optional, Tuple, Union
 
+from util.quadatasetgpu import QuaternionWaveletNoise
+from util.smooth import _sigma_total_from_pixel
+
 
 from models_dmae import DenoisingMaskedAutoencoderViT
 
@@ -121,11 +124,18 @@ class TwoStageDMAE(nn.Module):
 
     def __init__(self, base_model: DenoisingMaskedAutoencoderViT,
                  decoder2: ConditionalDecoder, res_encoder: ResidualEncoder,
-                 freeze_base: bool = True):
+                 *,
+                 freeze_base: bool = True,
+                 use_quaternion_noise: bool = False,
+                 levels: int = 1,
+                 ratio: float = 3.0):
         super().__init__()
         self.base = base_model
         self.decoder2 = decoder2
         self.res_encoder = res_encoder
+        self.use_quaternion_noise = bool(use_quaternion_noise)
+        self.levels = int(levels)
+        self.ratio = float(ratio)
 
         if freeze_base:
             for p in self.base.parameters():
@@ -166,8 +176,22 @@ class TwoStageDMAE(nn.Module):
             self.base.std = self.base.std.to(imgs.device)
 
         imgs_norm = (imgs - self.base.mean) / self.base.std
-        noise = torch.randn_like(imgs_norm) * self.base.sigma
-        imgs_noised = imgs_norm + noise
+
+        if self.use_quaternion_noise:
+            sigma_pix_norm = (self.base.sigma / self.base.std.mean()).item()
+            sigma_total = _sigma_total_from_pixel(sigma_pix_norm, self.ratio)
+            imgs_noised = QuaternionWaveletNoise.apply_noise(
+                imgs_norm,
+                sigma=sigma_total,
+                filter_name="haar",
+                levels=self.levels,
+                ratio=self.ratio,
+                device=imgs_norm.device,
+            )
+        else:
+            sigma_norm = self.base.sigma / self.base.std
+            noise = torch.randn_like(imgs_norm) * sigma_norm
+            imgs_noised = imgs_norm + noise
 
         latent, mask, ids_restore = self.base.forward_encoder(imgs_noised, mask_ratio)
         features = self._decoder_tokens(latent, ids_restore)
@@ -238,7 +262,13 @@ class TwoStageDMAE(nn.Module):
 
 
 def rcot_dmae_vit_base_patch16(
-    *, freeze_base: bool = True, dmae_ckpt: Optional[str] = None, **kwargs
+    *,
+    freeze_base: bool = True,
+    dmae_ckpt: Optional[str] = None,
+    use_quaternion_noise: bool = False,
+    levels: int = 1,
+    ratio: float = 3.0,
+    **kwargs,
 ) -> TwoStageDMAE:
     base = DenoisingMaskedAutoencoderViT(
         patch_size=16,
@@ -274,4 +304,12 @@ def rcot_dmae_vit_base_patch16(
     cond_decoder.out_proj.weight.data.copy_(base.decoder_pred.weight.data)
     cond_decoder.out_proj.bias.data.copy_(base.decoder_pred.bias.data)
     res_enc = ResidualEncoder(in_channels=3, embed_dim=base.decoder_embed_dim)
-    return TwoStageDMAE(base, cond_decoder, res_enc, freeze_base=freeze_base)
+    return TwoStageDMAE(
+        base,
+        cond_decoder,
+        res_enc,
+        freeze_base=freeze_base,
+        use_quaternion_noise=use_quaternion_noise,
+        levels=levels,
+        ratio=ratio,
+    )

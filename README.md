@@ -40,6 +40,7 @@ The following table provides the pre-trained checkpoints used in the paper:
 
 ### RCOT Training
 We provide separate scripts for Residual-Conditioned Optimal Transport (RCOT) experiments. The DMAE weights can remain frozen using the `--freeze_base` option.
+Noise for pre-training can be either standard Gaussian or quaternion wavelet based. Use `--use_quaternion_noise` to enable the latter (with optional `--levels` and `--ratio`).
 
 **ImageNet Example**
 ```bash
