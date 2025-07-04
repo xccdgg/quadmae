@@ -85,6 +85,8 @@ python visualize_rcot.py \
     --ckpt PATH_TO_RCOT_CHECKPOINT \
     --dmae_ckpt PATH_TO_DMAE_CHECKPOINT
 ```
+The script displays the original image, the noisy input, and the outputs of the
+first-stage DMAE and the full RCOT model for easy comparison.
 
 ### Certification
 We provide scripts to measure randomized smoothing certified accuracy.

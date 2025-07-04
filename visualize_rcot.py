@@ -28,7 +28,11 @@ def get_args() -> argparse.Namespace:
     p.add_argument("--levels", type=int, default=1, help="QWT decomposition levels")
     p.add_argument("--ratio", type=float, default=3.0, help="sigma_H / sigma_L")
     p.add_argument("--device", default="cpu", help="cpu or cuda")
-    p.add_argument("--no_rcot", action="store_true", help="disable second stage")
+    p.add_argument(
+        "--no_rcot",
+        action="store_true",
+        help="only run the first-stage DMAE (for comparison)",
+    )
     return p.parse_args()
 
 
@@ -69,7 +73,10 @@ def main() -> None:
         noisy = img.clone()
 
     with torch.no_grad():
-        restored = model.restore(noisy, use_rcot=not args.no_rcot)
+        dmae_out = model.restore(noisy, use_rcot=False)
+        rcot_out = None
+        if not args.no_rcot:
+            rcot_out = model.restore(noisy, use_rcot=True)
 
     def to_np(t: torch.Tensor) -> np.ndarray:
         """Convert a tensor image to a NumPy array Matplotlib can plot."""
@@ -84,16 +91,21 @@ def main() -> None:
 
     import matplotlib.pyplot as plt
 
-    fig, axes = plt.subplots(1, 3, figsize=(12, 4))
+    ncols = 4 if rcot_out is not None else 3
+    fig, axes = plt.subplots(1, ncols, figsize=(4 * ncols, 4))
     axes[0].imshow(to_np(img))
     axes[0].set_title("Clean")
     axes[0].axis("off")
     axes[1].imshow(to_np(noisy))
     axes[1].set_title("Noisy")
     axes[1].axis("off")
-    axes[2].imshow(to_np(restored))
-    axes[2].set_title("Restored")
+    axes[2].imshow(to_np(dmae_out))
+    axes[2].set_title("DMAE")
     axes[2].axis("off")
+    if rcot_out is not None:
+        axes[3].imshow(to_np(rcot_out))
+        axes[3].set_title("RCOT")
+        axes[3].axis("off")
     plt.tight_layout()
     plt.show()
 
