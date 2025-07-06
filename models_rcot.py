@@ -138,8 +138,18 @@ class TwoStageDMAE(nn.Module):
         self.ratio = float(ratio)
 
         if freeze_base:
+            # Freeze parameters of the base encoder and first decoder
             for p in self.base.parameters():
                 p.requires_grad_(False)
+
+            # Put BatchNorm layers in evaluation mode so that running stats stay frozen
+            for m in self.base.modules():
+                if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+                    m.eval()
+        else:
+            # Ensure all base parameters are trainable
+            for p in self.base.parameters():
+                p.requires_grad_(True)
 
         # Initialize conditional decoder positional embedding from the base decoder
         if self.decoder2.pos_embed.shape == (1, self.base.decoder_pos_embed.shape[1] - 1, self.base.decoder_pos_embed.shape[2]):

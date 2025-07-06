@@ -60,8 +60,18 @@ def get_args_parser():
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
 
-    parser.add_argument('--freeze_base', action='store_true',
-                        help='Freeze the underlying DMAE weights')
+    parser.add_argument(
+        '--freeze_base',
+        dest='freeze_base',
+        action='store_true',
+        help='Freeze base model (encoder & decoder1) during training (default: True)'
+    )
+    parser.add_argument(
+        '--unfreeze_base',
+        dest='freeze_base',
+        action='store_false',
+        help='Unfreeze base model for fine-tuning (train all layers)'
+    )
     parser.set_defaults(freeze_base=True)
     parser.add_argument('--dmae_ckpt', default='',
                         help='path to pretrained DMAE checkpoint')
@@ -178,6 +188,15 @@ def main(args):
 
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
+
+    if args.freeze_base:
+        print("Encoder & Decoder1 are frozen (requires_grad=False).")
+        print("BatchNorm layers in encoder/decoder1 set to eval mode.")
+        print("Residual Encoder & Decoder2 are trainable (requires_grad=True).")
+    else:
+        print("Encoder & Decoder1 are not frozen (trainable).")
+        print("BatchNorm layers in encoder/decoder1 are in training mode.")
+        print("All model components are trainable.")
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
 
