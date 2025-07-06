@@ -22,6 +22,7 @@ import util.misc as misc
 from util.datasets import build_dataset, build_dataset_with_interval
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from util.smooth import _to_bool
 
 import models_vit
 
@@ -146,7 +147,7 @@ def get_args_parser():
                         help='Std of Gaussian noise')
     parser.add_argument(
         '--use_quaternion_noise',
-        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+        type=_to_bool,
         default=False,
         help='Use quaternion wavelet noise instead of pixel Gaussian',
     )
