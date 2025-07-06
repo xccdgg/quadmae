@@ -142,14 +142,19 @@ class TwoStageDMAE(nn.Module):
             for p in self.base.parameters():
                 p.requires_grad_(False)
 
-            # Put BatchNorm layers in evaluation mode so that running stats stay frozen
+            # Put BatchNorm/Dropout layers in evaluation mode so that running stats stay frozen
             for m in self.base.modules():
-                if isinstance(m, nn.BatchNorm2d) or isinstance(m, nn.BatchNorm1d):
+                if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.Dropout)):
                     m.eval()
         else:
             # Ensure all base parameters are trainable
             for p in self.base.parameters():
                 p.requires_grad_(True)
+
+        print(
+            f"[Model] freeze_base={freeze_base}, "
+            f"trainable_params_base={sum(p.requires_grad for p in self.base.parameters())}"
+        )
 
         # Initialize conditional decoder positional embedding from the base decoder
         if self.decoder2.pos_embed.shape == (1, self.base.decoder_pos_embed.shape[1] - 1, self.base.decoder_pos_embed.shape[2]):
@@ -174,10 +179,8 @@ class TwoStageDMAE(nn.Module):
         self,
         imgs: torch.Tensor,
         mask_ratio: float = 0.75,
-        *,
-        use_rcot: bool = True,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Pretrain forward that supports optional RCOT refinement."""
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return intermediate tensors and stage losses for RCOT pretraining."""
 
         imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
 
@@ -208,18 +211,13 @@ class TwoStageDMAE(nn.Module):
         pred_tokens = pred_tokens[:, 1:, :]
         loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
 
-        if not use_rcot:
-            return loss1, pred_tokens, mask
-
         x_hat = self.base.unpatchify(pred_tokens)
         r = imgs_norm - x_hat
         cond = self.res_encoder(r)
         tokens2 = features[:, 1:, :]
         x_refined = self.decoder2(tokens2, cond)
         loss2 = ((x_refined - imgs_norm) ** 2).mean()
-        loss = loss1 + loss2
-        pred_refined = self.base.patchify(x_refined)
-        return loss, pred_refined, mask
+        return x_hat, r, x_refined, loss1, loss2
 
     # ------------------------------------------------------------------
     @torch.no_grad()

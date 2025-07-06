@@ -42,6 +42,10 @@ def get_args_parser():
 
     parser.add_argument('--mask_ratio', default=0.75, type=float,
                         help='Masking ratio (percentage of removed patches).')
+    parser.add_argument('--loss1_weight', default=1.0, type=float,
+                        help='Weight for stage1 reconstruction loss')
+    parser.add_argument('--loss2_weight', default=1.0, type=float,
+                        help='Weight for stage2 refinement loss')
 
     parser.add_argument('--norm_pix_loss', action='store_true',
                         help='Use (per-patch) normalized pixels as targets for computing loss')
@@ -192,6 +196,10 @@ def main(args):
 
     model_without_ddp = model
     print("Model = %s" % str(model_without_ddp))
+    print(
+        f"[Config] mask_ratio={args.mask_ratio}, loss1_weight={args.loss1_weight}, "
+        f"loss2_weight={args.loss2_weight}, freeze_base={args.freeze_base}"
+    )
 
     if args.freeze_base:
         print("Encoder & Decoder1 are frozen (requires_grad=False).")
@@ -218,9 +226,19 @@ def main(args):
         model_without_ddp = model.module
     
     # following timm: set wd as 0 for bias and norm layers
-    param_groups = optim_factory.add_weight_decay(model_without_ddp, args.weight_decay)
-    optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
-    print(optimizer)
+    new_lr = args.lr * 5
+    base_params = []
+    new_params = []
+    for name, p in model_without_ddp.named_parameters():
+        if name.startswith('base.'):
+            base_params.append(p)
+        else:
+            new_params.append(p)
+    optimizer = torch.optim.AdamW([
+        {'params': base_params, 'lr': args.lr, 'weight_decay': args.weight_decay},
+        {'params': new_params, 'lr': new_lr, 'weight_decay': args.weight_decay},
+    ], betas=(0.9, 0.95))
+    print(f"[Opt] base_lr={args.lr:.2e}, new_module_lr={new_lr:.2e}")
     loss_scaler = NativeScaler()
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
