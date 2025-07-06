@@ -144,8 +144,12 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
-    parser.add_argument('--use_quaternion_noise', default=False,
-                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    parser.add_argument(
+        '--use_quaternion_noise',
+        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+        default=False,
+        help='Use quaternion wavelet noise instead of pixel Gaussian',
+    )
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
