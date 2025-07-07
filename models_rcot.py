@@ -8,7 +8,7 @@ import PIL
 from typing import Optional, Tuple, Union
 
 from util.quadatasetgpu import QuaternionWaveletNoise
-from util.smooth import _sigma_total_from_pixel, _to_bool
+from util.smooth import _sigma_total_from_pixel
 
 
 from models_dmae import DenoisingMaskedAutoencoderViT
@@ -133,7 +133,7 @@ class TwoStageDMAE(nn.Module):
         self.base = base_model
         self.decoder2 = decoder2
         self.res_encoder = res_encoder
-        self.use_quaternion_noise = _to_bool(use_quaternion_noise)
+        self.use_quaternion_noise = bool(use_quaternion_noise)
         self.levels = int(levels)
         self.ratio = float(ratio)
 
