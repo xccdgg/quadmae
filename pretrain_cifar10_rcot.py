@@ -19,7 +19,6 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.smooth import _to_bool
 
 import models_rcot
 
@@ -56,7 +55,7 @@ def get_args_parser():
                         help='Std of Gaussian noise')
     parser.add_argument(
         '--use_quaternion_noise',
-        type=_to_bool,
+        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
         default=False,
         help='Use quaternion wavelet noise instead of pixel Gaussian',
     )
@@ -199,8 +198,7 @@ def main(args):
     print("Model = %s" % str(model_without_ddp))
     print(
         f"[Config] mask_ratio={args.mask_ratio}, loss1_weight={args.loss1_weight}, "
-        f"loss2_weight={args.loss2_weight}, freeze_base={args.freeze_base}, "
-        f"use_quaternion_noise={args.use_quaternion_noise}"
+        f"loss2_weight={args.loss2_weight}, freeze_base={args.freeze_base}"
     )
 
     if args.freeze_base:
@@ -281,4 +279,3 @@ if __name__ == '__main__':
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     main(args)
-
