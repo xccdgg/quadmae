@@ -27,6 +27,7 @@ def train_one_epoch(model: torch.nn.Module,
 
     debug_dir = os.path.join(args.output_dir, 'debug')
     os.makedirs(debug_dir, exist_ok=True)
+    debug_fp = open(os.path.join(debug_dir, 'debug.log'), 'a')
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -38,7 +39,7 @@ def train_one_epoch(model: torch.nn.Module,
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
 
         samples = samples.to(device, non_blocking=True)
-        print(f"[Debug] Batch {data_iter_step}: imgs range [{samples.min():.3f}, {samples.max():.3f}]")
+        debug_fp.write(f"[Debug] Batch {data_iter_step}: imgs range [{samples.min():.3f}, {samples.max():.3f}]\n")
 
         try:
             autocast = torch.autocast
@@ -52,7 +53,7 @@ def train_one_epoch(model: torch.nn.Module,
             torchvision.utils.save_image(x_hat,        f"{debug_dir}/x_hat.png")
             torchvision.utils.save_image(r,           f"{debug_dir}/r.png")
             torchvision.utils.save_image(x_refined,    f"{debug_dir}/x_refined.png")
-        print(f"[Debug] Batch {data_iter_step}: loss1={loss1.item():.4f}, loss2={loss2.item():.4f}")
+        debug_fp.write(f"[Debug] Batch {data_iter_step}: loss1={loss1.item():.4f}, loss2={loss2.item():.4f}\n")
 
         loss_value = loss.item()
 
@@ -66,10 +67,10 @@ def train_one_epoch(model: torch.nn.Module,
         if (data_iter_step + 1) % accum_iter == 0:
             for name, p in model.res_encoder.named_parameters():
                 if p.grad is not None:
-                    print(f"[Debug] res_encoder.{name} grad_norm={p.grad.norm():.4e}")
+                    debug_fp.write(f"[Debug] res_encoder.{name} grad_norm={p.grad.norm():.4e}\n")
             for name, p in model.decoder2.named_parameters():
                 if p.grad is not None:
-                    print(f"[Debug] decoder2.{name} grad_norm={p.grad.norm():.4e}")
+                    debug_fp.write(f"[Debug] decoder2.{name} grad_norm={p.grad.norm():.4e}\n")
             optimizer.zero_grad()
 
         torch.cuda.synchronize()
@@ -92,4 +93,5 @@ def train_one_epoch(model: torch.nn.Module,
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
+    debug_fp.close()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
