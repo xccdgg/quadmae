@@ -1,3 +1,5 @@
+### 此分支decoder2是预测差值，与dmae的恢复结果进行相加。
+
 # Denoising Masked Autoencoders Help Robust Classification (ICLR 2023)
 <p align="center">
   <img src="assets/pipeline.png", width="640">
