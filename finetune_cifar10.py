@@ -165,9 +165,9 @@ def get_args_parser():
                         help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
                         help='Weight of entropy')
-    parser.add_argument('--use_rcot', action='store_true', default=False,
+    parser.add_argument('--use_rcot', action='store_true', default=True,
                         help='Enable RCOT restorer for joint training')
-    parser.add_argument('--rcot_ckpt', type=str, default='',
+    parser.add_argument('--rcot_ckpt', type=str, default=r"D:\pycharm\rcotdmae2\cifar10output_dir1\checkpoint-40.pth",
                         help='Path to RCOT checkpoint')
     parser.add_argument('--lambda_rcot', type=float, default=0.5,
                         help='Weight for RCOT reconstruction loss (L2)')
@@ -387,6 +387,8 @@ def main(args):
     # 确保模型参数为 float32（避免权重/偏置为 float16 导致与输入 dtype 不匹配）
     model = model.float().to(device)
     if args.use_rcot:
+        print("RCOT model loaded successfully!")
+        print(f"RCOT checkpoint path: {args.rcot_ckpt}")
         import models_rcot
         restorer = models_rcot.rcot_dmae_vit_base_patch16(freeze_base=False)
         if args.rcot_ckpt:

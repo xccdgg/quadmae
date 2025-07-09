@@ -310,6 +310,8 @@ def main(args):
     model.to(device)
 
     if args.use_rcot:
+        print("RCOT model loaded successfully!")
+        print(f"RCOT checkpoint path: {args.rcot_ckpt}")
         import models_rcot
         restorer = models_rcot.rcot_dmae_vit_base_patch16(freeze_base=False)
         if args.rcot_ckpt:
