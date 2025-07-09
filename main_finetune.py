@@ -37,7 +37,7 @@ def get_args_parser():
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
     # Model parameters
-    parser.add_argument('--model', default='vit_large_patch16', type=str, metavar='MODEL',
+    parser.add_argument('--model', default='vit_base_patch16', type=str, metavar='MODEL',
                         help='Name of model to train')
 
     parser.add_argument('--input_size', default=224, type=int,
@@ -106,7 +106,7 @@ def get_args_parser():
                         help='Use class token instead of global pool for classification')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='', type=str,
+    parser.add_argument('--data_path', default=r"D:\dataset\tinyimagenet\tiny-imagenet-200", type=str,
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
@@ -118,7 +118,7 @@ def get_args_parser():
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
     parser.add_argument('--seed', default=0, type=int)
-    parser.add_argument('--resume', default='',
+    parser.add_argument('--resume', default=r"D:\pycharm\dmae-main\models\dmae_base_sigma_0.25_mask_0.75_1100e.pth",
                         help='resume from checkpoint')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
@@ -164,7 +164,7 @@ def get_args_parser():
                         help='Weight of entropy')
     parser.add_argument('--use_rcot', action='store_true', default=False,
                         help='Enable RCOT residual restoration during fine-tuning')
-    parser.add_argument('--rcot_ckpt', type=str, default='',
+    parser.add_argument('--rcot_ckpt', type=str, default=r"C:\Users\车\Downloads\checkpoint-40 (2).pth",
                         help='Path to RCOT checkpoint')
     parser.add_argument('--lambda_rcot', type=float, default=0.5,
                         help='Weight for RCOT reconstruction loss (L2)')

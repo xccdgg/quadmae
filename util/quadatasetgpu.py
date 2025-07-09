@@ -62,6 +62,7 @@ class QuaternionWavelet:
     # 正向分解
     # ---------------------------------------------------------------------
     def decompose(self, images: torch.Tensor, levels: int = 1):
+        print("quanoise")
         """单层分解；返回 dict：{'LL': Tensor, 'subbands': [(LH,HL,HH)]}"""
         if images.dim() == 2:  # H,W 灰度 → 1, H, W, 1
             images = images.unsqueeze(0).unsqueeze(-1)

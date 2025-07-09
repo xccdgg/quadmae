@@ -312,7 +312,18 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
                 args.resume, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        # support checkpoints without explicit 'model' key
+        if isinstance(checkpoint, dict):
+            if 'model' in checkpoint:
+                ckpt_model = checkpoint['model']
+            elif 'state_dict' in checkpoint:
+                ckpt_model = checkpoint['state_dict']
+            else:
+                ckpt_model = checkpoint
+        else:
+            ckpt_model = checkpoint
+
+        model_without_ddp.load_state_dict(ckpt_model, strict=False)
         print("Resume checkpoint %s" % args.resume)
         if 'optimizer' in checkpoint and 'epoch' in checkpoint and not (hasattr(args, 'eval') and args.eval):
             optimizer.load_state_dict(checkpoint['optimizer'])
