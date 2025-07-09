@@ -12,7 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import timm
 
-assert timm.__version__ == "0.5.4" # version check
+assert timm.__version__ == "0.5.4"  # version check
 from timm.models.layers import trunc_normal_
 from timm.data.mixup import Mixup
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
@@ -22,7 +22,6 @@ import util.misc as misc
 from util.datasets import build_dataset, build_dataset_with_interval
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.smooth import _to_bool
 
 import models_vit
 
@@ -145,28 +144,24 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
-    parser.add_argument(
-        '--use_quaternion_noise',
-        type=_to_bool,
-        default=False,
-        help='Use quaternion wavelet noise instead of pixel Gaussian',
-    )
+    parser.add_argument('--use_quaternion_noise', default=False,
+                        help='Use quaternion wavelet noise instead of pixel Gaussian')
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
-        
+
     # consistency regularization parameters
     parser.add_argument('--con_reg', action='store_true', default=False,
-                    help='enable consistency regularization')
+                        help='enable consistency regularization')
     parser.add_argument('--num_noise_sample', default=2, type=int,
-                      help='Number of Gaussian samples per input')
+                        help='Number of Gaussian samples per input')
     parser.add_argument('--reg_lbd', default=2.0, type=float,
-                      help='Weight of K-L divergence')
+                        help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
-                      help='Weight of entropy')
+                        help='Weight of entropy')
 
     return parser
 
@@ -193,21 +188,23 @@ def main(args):
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
         global_rank = misc.get_rank()
-        
+
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
         print("Sampler_train = %s" % str(sampler_train))
-        
+
         if args.dist_eval:
             if len(dataset_val) % num_tasks != 0:
                 print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
                       'This will slightly alter validation results as extra duplicate entries are added to achieve '
                       'equal num of samples per-process.')
             sampler_val = torch.utils.data.DistributedSampler(
-                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
+                dataset_val, num_replicas=num_tasks, rank=global_rank,
+                shuffle=True)  # shuffle=True to reduce monitor bias
             sampler_certify = torch.utils.data.DistributedSampler(
-                dataset_certify, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
+                dataset_certify, num_replicas=num_tasks, rank=global_rank,
+                shuffle=True)  # shuffle=True to reduce monitor bias
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
@@ -252,7 +249,7 @@ def main(args):
             mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
-    
+
     model = models_vit.__dict__[args.model](
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
@@ -311,7 +308,7 @@ def main(args):
     print('number of params (M): %.2f' % (n_parameters / 1.e6))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
+
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
@@ -330,9 +327,9 @@ def main(args):
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay
-    )
+                                        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+                                        layer_decay=args.layer_decay
+                                        )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 
@@ -347,7 +344,7 @@ def main(args):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-    
+
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
@@ -360,7 +357,8 @@ def main(args):
             levels=args.levels,
             ratio=args.ratio,
         )
-        print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
+        print(
+            f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
     print(f"Start training for {args.epochs} epochs")
@@ -378,8 +376,8 @@ def main(args):
                 args.clip_grad, mixup_fn,
                 log_writer=log_writer,
                 args=args
-            ) 
-        else: 
+            )
+        else:
             train_stats = train_one_epoch(
                 model, criterion, data_loader_train,
                 optimizer, device, epoch, loss_scaler,
@@ -409,7 +407,8 @@ def main(args):
                 levels=args.levels,
                 ratio=args.ratio,
             )
-            print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
+            print(
+                f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
             max_r0_accuracy = max(max_r0_accuracy, test_stats_r0['acc1_r0'])
             print(f'Max accuracy on radius 0: {max_r0_accuracy:.2f}%')
             if log_writer is not None:
@@ -421,9 +420,9 @@ def main(args):
             log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+                     **{f'test_{k}': v for k, v in test_stats.items()},
+                     'epoch': epoch,
+                     'n_parameters': n_parameters}
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
