@@ -215,8 +215,7 @@ class TwoStageDMAE(nn.Module):
         r = imgs_norm - x_hat
         cond = self.res_encoder(r)
         tokens2 = features[:, 1:, :]
-        delta_x = self.decoder2(tokens2, cond)
-        x_refined = x_hat + delta_x
+        x_refined = self.decoder2(tokens2, cond)
         loss2 = ((x_refined - imgs_norm) ** 2).mean()
         return x_hat, r, x_refined, loss1, loss2
 
@@ -265,8 +264,7 @@ class TwoStageDMAE(nn.Module):
 
         cond = self.res_encoder(r)
         tokens2 = features[:, 1:, :]
-        delta_x = self.decoder2(tokens2, cond)
-        x_refined = x_hat + delta_x
+        x_refined = self.decoder2(tokens2, cond)
         return (x_refined * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
 
@@ -312,10 +310,10 @@ def rcot_dmae_vit_base_patch16(
         patch_size=base.patch_embed.patch_size[0],
         image_size=base.patch_embed.img_size,
     )
-    # initialize normalization from the first stage decoder
+    # initialize output projection and normalization from the first stage decoder
     cond_decoder.norm.load_state_dict(base.decoder_norm.state_dict())
-    nn.init.zeros_(cond_decoder.out_proj.weight)
-    nn.init.zeros_(cond_decoder.out_proj.bias)
+    cond_decoder.out_proj.weight.data.copy_(base.decoder_pred.weight.data)
+    cond_decoder.out_proj.bias.data.copy_(base.decoder_pred.bias.data)
     res_enc = ResidualEncoder(in_channels=3, embed_dim=base.decoder_embed_dim)
     return TwoStageDMAE(
         base,
