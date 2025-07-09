@@ -136,7 +136,7 @@ def get_args_parser():
 
     # distributed training parameters
     parser.add_argument('--distributed', default=False,
-                         help='whether to train distributed')
+                        help='whether to train distributed')
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--local_rank', default=-1, type=int)
@@ -148,31 +148,33 @@ def get_args_parser():
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
     parser.add_argument('--sample_interval', default=50, type=int,
-                        help="the interval of sampling during test")    
-    
+                        help="the interval of sampling during test")
+
     # consistency regularization parameters
     parser.add_argument('--con_reg', action='store_true', default=False,
-                    help='enable consistency regularization')
+                        help='enable consistency regularization')
     parser.add_argument('--num_noise_sample', default=2, type=int,
-                      help='Number of Gaussian samples per input')
+                        help='Number of Gaussian samples per input')
     parser.add_argument('--reg_lbd', default=2.0, type=float,
-                      help='Weight of K-L divergence')
+                        help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
-                      help='Weight of entropy')
+                        help='Weight of entropy')
 
     return parser
 
+
 class DatasetWithInterval(torch.utils.data.Dataset):
     '''
-    sampling data with interval from a given dataset 
+    sampling data with interval from a given dataset
     '''
+
     def __init__(self, dataset, interval):
         self.dataset = dataset
         self.interval = interval
-    
+
     def __getitem__(self, index):
         return self.dataset[index * self.interval]
-    
+
     def __len__(self):
         return len(self.dataset) // self.interval
 
@@ -191,43 +193,45 @@ def main(args):
     np.random.seed(seed)
 
     cudnn.benchmark = True
-    
+
     train_transform = transforms.Compose(
-    [
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-    ])
+        [
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+        ])
     val_transform = transforms.ToTensor()
 
     dataset_train = datasets.CIFAR10(root=args.data_path,
-                                      train=True,
-                                      download=True,
-                                      transform=train_transform)
+                                     train=True,
+                                     download=False,
+                                     transform=train_transform)
     dataset_val = datasets.CIFAR10(root=args.data_path,
-                                    train=False,
-                                    download=True,
-                                    transform=val_transform)
-    
+                                   train=False,
+                                   download=False,
+                                   transform=val_transform)
+
     dataset_certify = DatasetWithInterval(dataset_val, 10)
 
     if args.distributed:  # args.distributed:
         num_tasks = misc.get_world_size()
         global_rank = misc.get_rank()
-        
+
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
         print("Sampler_train = %s" % str(sampler_train))
-        
+
         if args.dist_eval:
             if len(dataset_val) % num_tasks != 0:
                 print('Warning: Enabling distributed evaluation with an eval dataset not divisible by process number. '
                       'This will slightly alter validation results as extra duplicate entries are added to achieve '
                       'equal num of samples per-process.')
             sampler_val = torch.utils.data.DistributedSampler(
-                dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
+                dataset_val, num_replicas=num_tasks, rank=global_rank,
+                shuffle=True)  # shuffle=True to reduce monitor bias
             sampler_certify = torch.utils.data.DistributedSampler(
-                dataset_certify, num_replicas=num_tasks, rank=global_rank, shuffle=True)  # shuffle=True to reduce monitor bias
+                dataset_certify, num_replicas=num_tasks, rank=global_rank,
+                shuffle=True)  # shuffle=True to reduce monitor bias
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
     else:
@@ -257,7 +261,7 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False
     )
-    
+
     data_loader_certify = torch.utils.data.DataLoader(
         dataset_certify, sampler=sampler_certify,
         batch_size=args.batch_size,
@@ -265,9 +269,7 @@ def main(args):
         pin_memory=args.pin_mem,
         drop_last=False
     )
-    
-    
-        
+
     mixup_fn = None
     mixup_active = args.mixup > 0 or args.cutmix > 0. or args.cutmix_minmax is not None
     if mixup_active:
@@ -276,7 +278,7 @@ def main(args):
             mixup_alpha=args.mixup, cutmix_alpha=args.cutmix, cutmix_minmax=args.cutmix_minmax,
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
-    
+
     model = models_vit.__dict__[args.model](
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
@@ -302,6 +304,11 @@ def main(args):
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
+        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
+        for name, param in model.named_parameters():
+            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
+                param.data = param.data.float()
+
 
     elif args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
@@ -320,6 +327,11 @@ def main(args):
         if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, 'state_dict'):
             checkpoint_model = checkpoint_model.state_dict()
 
+        # 若权重以半精度存储，统一转换成 float32
+        for k, v in checkpoint_model.items():
+            if isinstance(v, torch.Tensor):
+                checkpoint_model[k] = v.float()
+
         state_dict = model.state_dict()
 
         # 移除 head 层不匹配的参数
@@ -337,7 +349,12 @@ def main(args):
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
-        
+
+        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
+        for name, param in model.named_parameters():
+            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
+                param.data = param.data.float()
+
         # 放宽断言条件
         allowed_missing = {'head.weight', 'head.bias'}
         if args.global_pool:
@@ -355,8 +372,8 @@ def main(args):
 
         # manually initialize fc layer
         trunc_normal_(model.head.weight, std=2e-5)
-
-    model.to(device)
+    # 确保模型参数为 float32（避免权重/偏置为 float16 导致与输入 dtype 不匹配）
+    model = model.float().to(device)
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -365,7 +382,7 @@ def main(args):
     print('number of params (M): %.2f' % (n_parameters / 1.e6))
 
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
-    
+
     if args.lr is None:  # only base_lr is specified
         args.lr = args.blr * eff_batch_size / 256
 
@@ -382,9 +399,9 @@ def main(args):
 
     # build optimizer with layer-wise lr decay (lrd)
     param_groups = lrd.param_groups_lrd(model_without_ddp, args.weight_decay,
-        no_weight_decay_list=model_without_ddp.no_weight_decay(),
-        layer_decay=args.layer_decay
-    )
+                                        no_weight_decay_list=model_without_ddp.no_weight_decay(),
+                                        layer_decay=args.layer_decay
+                                        )
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 
@@ -399,12 +416,18 @@ def main(args):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-    
+    # ——— 方案 A：finetune 时在加载完混合精度 checkpoint 后，重新强制 cast 整个模型为 float32 ———
+    if args.distributed:
+        model.module.float()
+    else:
+        model.float()
+
     if args.eval:
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         test_stats = evaluate_radius_0(data_loader_val, model, device, args.sigma, stride=100)
-        print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
+        print(
+            f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats['acc1_r0']:.1f}%")
         exit(0)
 
     print(f"Start training for {args.epochs} epochs")
@@ -422,8 +445,8 @@ def main(args):
                 args.clip_grad, mixup_fn,
                 log_writer=log_writer,
                 args=args
-            ) 
-        else: 
+            )
+        else:
             train_stats = train_one_epoch(
                 model, criterion, data_loader_train,
                 optimizer, device, epoch, loss_scaler,
@@ -432,10 +455,10 @@ def main(args):
                 args=args
             )
 
-#         if args.output_dir and (epoch + 1) % 50 == 0:
-#             misc.save_model(
-#                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-#                 loss_scaler=loss_scaler, epoch=epoch)
+        #         if args.output_dir and (epoch + 1) % 50 == 0:
+        #             misc.save_model(
+        #                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+        #                 loss_scaler=loss_scaler, epoch=epoch)
 
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
@@ -444,7 +467,8 @@ def main(args):
 
         if (epoch + 1) % 1 == 0:
             test_stats_r0 = evaluate_radius_0(data_loader_certify, model, device, args.sigma, stride=25)
-            print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
+            print(
+                f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
             if test_stats_r0['acc1_r0'] > max_r0_accuracy:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
@@ -460,9 +484,9 @@ def main(args):
             log_writer.add_scalar('perf/test_loss', test_stats['loss'], epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        **{f'test_{k}': v for k, v in test_stats.items()},
-                        'epoch': epoch,
-                        'n_parameters': n_parameters}
+                     **{f'test_{k}': v for k, v in test_stats.items()},
+                     'epoch': epoch,
+                     'n_parameters': n_parameters}
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:
