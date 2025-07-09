@@ -76,7 +76,7 @@ def get_args_parser():
         action='store_false',
         help='Unfreeze base model for fine-tuning (train all layers)'
     )
-    parser.set_defaults(freeze_base=False)
+    parser.set_defaults(freeze_base=True)
     parser.add_argument('--dmae_ckpt', default=r"D:\pycharm\dmae-main\models\dmae_base_sigma_0.25_mask_0.75_1100e.pth",
                         help='path to pretrained DMAE checkpoint')
 
