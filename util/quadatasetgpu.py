@@ -9,8 +9,6 @@
 from __future__ import annotations
 
 import math
-from typing import Optional, Union, Dict, List, Tuple
-
 import torch
 import torch.nn.functional as F
 
@@ -32,7 +30,7 @@ class QuaternionWavelet:
     * 仅实现最常用的单层 2D Haar；更多小波请自行扩展。
     """
 
-    def __init__(self, filter_name: str = "haar", device: Optional[Union[str, torch.device]] = None):
+    def __init__(self, filter_name: str = "haar", device: str | torch.device | None = None):
         if filter_name.lower() != "haar":
             raise NotImplementedError("当前仅实现 Haar 小波")
         if device is None:
@@ -76,7 +74,7 @@ class QuaternionWavelet:
             r = torch.zeros_like(x)
             x = torch.cat([x, r, r, r], dim=1)
 
-        coeffs: Dict[str, Union[torch.Tensor, List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]]] = {"subbands": []}
+        coeffs: dict[str, torch.Tensor | list[tuple[torch.Tensor, torch.Tensor, torch.Tensor]]] = {"subbands": []}
         current = x
         for _ in range(levels):
             a, b, c1, d = current[:, 0], current[:, 1], current[:, 2], current[:, 3]
