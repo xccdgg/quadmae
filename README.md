@@ -98,7 +98,7 @@ We provide scripts to measure randomized smoothing certified accuracy.
 python certify.py \
     --resume PATH_TO_CHECKPOINT \
     --sigma 0.5 \
-    --use_rcot --rcot_ckpt PATH_TO_RCOT
+    --use_rcot --rcot_ckpt PATH_TO_RCOT --lambda_rcot 0.5
 ```
 
 For CIFAR-10, use `certify_cifar10.py` with the same options.

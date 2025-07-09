@@ -159,6 +159,12 @@ def get_args_parser():
                         help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
                         help='Weight of entropy')
+    parser.add_argument('--use_rcot', action='store_true', default=False,
+                        help='Enable RCOT restorer for joint training')
+    parser.add_argument('--rcot_ckpt', type=str, default='',
+                        help='Path to RCOT checkpoint')
+    parser.add_argument('--lambda_rcot', type=float, default=0.5,
+                        help='Weight for RCOT reconstruction loss (L2)')
 
     return parser
 
@@ -374,6 +380,16 @@ def main(args):
         trunc_normal_(model.head.weight, std=2e-5)
     # 确保模型参数为 float32（避免权重/偏置为 float16 导致与输入 dtype 不匹配）
     model = model.float().to(device)
+    if args.use_rcot:
+        import models_rcot
+        restorer = models_rcot.rcot_dmae_vit_base_patch16(freeze_base=False)
+        if args.rcot_ckpt:
+            ckpt = torch.load(args.rcot_ckpt, map_location='cpu')
+            restorer.load_state_dict(ckpt.get('model', ckpt), strict=False)
+        restorer = restorer.to(device)
+        if args.distributed:
+            restorer = torch.nn.parallel.DistributedDataParallel(restorer, device_ids=[args.gpu])
+        args.restorer = restorer
 
     model_without_ddp = model
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -402,6 +418,13 @@ def main(args):
                                         no_weight_decay_list=model_without_ddp.no_weight_decay(),
                                         layer_decay=args.layer_decay
                                         )
+    if args.use_rcot:
+        restorer_without_ddp = args.restorer.module if args.distributed else args.restorer
+        param_groups.append({
+            'params': restorer_without_ddp.parameters(),
+            'lr': args.lr,
+            'weight_decay': args.weight_decay,
+        })
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
 

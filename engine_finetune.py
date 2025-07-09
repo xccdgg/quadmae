@@ -51,17 +51,36 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         samples = samples.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
 
+        if args.use_rcot:
+            orig = samples.clone()
+
         samples = noised(samples)
         samples = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(samples)
-        # keep data on the training device and match model dtype
         samples = samples.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
-
-        if mixup_fn is not None:
-            samples, targets = mixup_fn(samples, targets)
+        if args.use_rcot:
+            orig = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(orig)
+            orig = orig.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
 
         with torch.cuda.amp.autocast():
-            outputs = model(samples)
-            loss = criterion(outputs, targets)
+            if args.use_rcot:
+                restorer = args.restorer.module if args.distributed else args.restorer
+                restorer.base.sigma = 0.0
+                _, _, x_refined_norm, _, _ = restorer(samples, mask_ratio=0.0)
+                base = restorer.base
+                x_refined = (x_refined_norm * base.std + base.mean).clamp(0.0, 1.0)
+                rcot_loss = ((x_refined - orig) ** 2).mean()
+                if mixup_fn is not None:
+                    x_refined, targets = mixup_fn(x_refined, targets)
+                outputs = model(x_refined)
+                cls_loss = criterion(outputs, targets)
+                loss = cls_loss + args.lambda_rcot * rcot_loss
+                rcot_loss_value = rcot_loss.item()
+            else:
+                if mixup_fn is not None:
+                    samples, targets = mixup_fn(samples, targets)
+                outputs = model(samples)
+                loss = criterion(outputs, targets)
+                rcot_loss_value = 0.0
 
         loss_value = loss.item()
 
@@ -70,8 +89,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             sys.exit(1)
 
         loss /= accum_iter
+        if args.use_rcot:
+            params = list(model.parameters()) + list(args.restorer.parameters())
+        else:
+            params = model.parameters()
         loss_scaler(loss, optimizer, clip_grad=max_norm,
-                    parameters=model.parameters(), create_graph=False,
+                    parameters=params, create_graph=False,
                     update_grad=(data_iter_step + 1) % accum_iter == 0)
         if (data_iter_step + 1) % accum_iter == 0:
             optimizer.zero_grad()
@@ -79,6 +102,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
+        if args.use_rcot:
+            metric_logger.update(rcot=rcot_loss_value)
         min_lr = 10.
         max_lr = 0.
         for group in optimizer.param_groups:
@@ -94,6 +119,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             """
             epoch_1000x = int((data_iter_step / len(data_loader) + epoch) * 1000)
             log_writer.add_scalar('loss', loss_value_reduce, epoch_1000x)
+            if args.use_rcot:
+                log_writer.add_scalar('rcot_loss', misc.all_reduce_mean(rcot_loss_value), epoch_1000x)
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
 
     # gather the stats from all processes

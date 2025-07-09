@@ -17,6 +17,8 @@ OMP_NUM_THREADS=1 python -m torch.distributed.launch --nproc_per_node=8 main_fin
 ```
 - Here the effective batch size is 32 (`batch_size` per gpu) * 4 (`accum_iter`) * 8 (gpus) = 1024. `--accum_iter 4` simulates 4 nodes.
 - In default we use `reg_lbd` = 2.0, `reg_eta` = 0.5 for `sigma` in {0.25, 0.5}, and use `reg_lbd` = 2.0, `reg_eta` = 0.1 for `sigma` = 1.0.
+- To train the RCOT restorer jointly with the classifier, add `--use_rcot --rcot_ckpt PATH_TO_RCOT`.
+  The reconstruction loss weight can be controlled with `--lambda_rcot` (default `0.5`).
 
 Script for fine-tuning pretrained ViT-Large:
 ```
