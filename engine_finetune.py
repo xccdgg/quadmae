@@ -37,7 +37,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     optimizer.zero_grad()
 
     # gaussian augmentation
-    noised = AddNoise(args.sigma, device=device)
+    noised = AddNoise(
+        args.sigma,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
+        device=device,
+    )
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
