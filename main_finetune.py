@@ -213,9 +213,11 @@ def main(args):
                 shuffle=True)  # shuffle=True to reduce monitor bias
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+            sampler_certify = torch.utils.data.SequentialSampler(dataset_certify)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
         sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        sampler_certify = torch.utils.data.SequentialSampler(dataset_certify)
 
     if global_rank == 0 and args.log_dir is not None and not args.eval:
         os.makedirs(args.log_dir, exist_ok=True)
