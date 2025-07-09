@@ -29,7 +29,7 @@ def get_args_parser():
     parser = argparse.ArgumentParser('RCOT pre-training', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
-    parser.add_argument('--epochs', default=400, type=int)
+    parser.add_argument('--epochs', default=150, type=int)
     parser.add_argument('--accum_iter', default=1, type=int,
                         help='Accumulate gradient iterations (for increasing the effective batch size under memory constraints)')
 
@@ -77,7 +77,7 @@ def get_args_parser():
         help='Unfreeze base model for fine-tuning (train all layers)'
     )
     parser.set_defaults(freeze_base=True)
-    parser.add_argument('--dmae_ckpt', default='',
+    parser.add_argument('--dmae_ckpt', default=r"D:\pycharm\dmae-main\models\dmae_base_sigma_0.25_mask_0.75_1100e.pth",
                         help='path to pretrained DMAE checkpoint')
 
     # Optimizer parameters
@@ -91,15 +91,15 @@ def get_args_parser():
     parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
 
-    parser.add_argument('--warmup_epochs', type=int, default=40, metavar='N',
+    parser.add_argument('--warmup_epochs', type=int, default=20, metavar='N',
                         help='epochs to warmup LR')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default='', type=str, help='dataset path')
+    parser.add_argument('--data_path', default=r"D:\dataset\cifar-10-python", type=str, help='dataset path')
 
-    parser.add_argument('--output_dir', default='./output_dir',
+    parser.add_argument('--output_dir', default='./cifar10output_dir',
                         help='path where to save, empty for no saving')
-    parser.add_argument('--log_dir', default='./output_dir',
+    parser.add_argument('--log_dir', default='./cifar10output_dir',
                         help='path where to tensorboard log')
     parser.add_argument('--device', default='cuda',
                         help='device to use for training / testing')
