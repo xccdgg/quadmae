@@ -1,4 +1,5 @@
 ### 此分支decoder2是预测差值，与dmae的恢复结果进行相加。
+main_finetune有rcot分支
 
 # Denoising Masked Autoencoders Help Robust Classification (ICLR 2023)
 <p align="center">
