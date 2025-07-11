@@ -94,9 +94,9 @@ def train_one_epoch(
     optimizer.zero_grad()
 
     # ------------------------------------------------------------------
-    # Debug config – only active every 20 epochs
+    # Debug config – only active every 5 epochs
     # ------------------------------------------------------------------
-    do_debug = (epoch % 20 == 0)
+    do_debug = (epoch % 5 == 0)
     debug_fp = None
     if do_debug and misc.is_main_process():
         debug_dir = os.path.join(args.output_dir, "debug")
