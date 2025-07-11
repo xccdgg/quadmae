@@ -178,3 +178,33 @@ def train_one_epoch(
         debug_fp.close()
 
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+
+@torch.no_grad()
+def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device, args=None):
+    """Validation loop used during RCOT pre-training."""
+
+    model.eval()
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    header = "Val:"
+
+    for samples, _ in metric_logger.log_every(data_loader, 10, header):
+        samples = samples.to(device, non_blocking=True)
+
+        # torch>=1.12 changed autocast namespace
+        try:
+            autocast_fn = torch.autocast  # type: ignore[attr-defined]
+        except AttributeError:  # pragma: no cover
+            autocast_fn = torch.cuda.amp.autocast
+
+        with autocast_fn("cuda"):
+            _, _, _, loss1, loss2 = model(samples, mask_ratio=args.mask_ratio)
+            loss = loss1 * args.loss1_weight + loss2 * args.loss2_weight
+
+        metric_logger.update(loss=loss.item())
+        metric_logger.update(loss1=loss1.item())
+        metric_logger.update(loss2=loss2.item())
+
+    metric_logger.synchronize_between_processes()
+    print("Averaged val stats:", metric_logger)
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

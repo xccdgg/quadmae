@@ -22,7 +22,7 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 import models_rcot
 
-from engine_pretrain import train_one_epoch
+from engine_pretrain import train_one_epoch, evaluate
 
 
 def get_args_parser():
@@ -153,6 +153,14 @@ def main(args):
     dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
 
+    transform_val = transforms.Compose([
+            transforms.Resize(args.input_size, interpolation=3),
+            transforms.CenterCrop(args.input_size),
+            transforms.ToTensor(),
+    ])
+    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, 'val'), transform=transform_val)
+    print(dataset_val)
+
     if True:  # args.distributed:
         num_tasks = misc.get_world_size()
         global_rank = misc.get_rank()
@@ -160,8 +168,12 @@ def main(args):
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
         print("Sampler_train = %s" % str(sampler_train))
+        sampler_val = torch.utils.data.DistributedSampler(
+            dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=False
+        )
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
+        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
 
     if global_rank == 0 and args.log_dir is not None:
         os.makedirs(args.log_dir, exist_ok=True)
@@ -175,6 +187,14 @@ def main(args):
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=True,
+    )
+
+    data_loader_val = torch.utils.data.DataLoader(
+        dataset_val, sampler=sampler_val,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=args.pin_mem,
+        drop_last=False,
     )
 
     # define the model
@@ -241,6 +261,7 @@ def main(args):
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
+    best_val_loss = float("inf")
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -250,12 +271,17 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 1 == 0 or epoch + 1 == args.epochs):
+        val_stats = evaluate(model, data_loader_val, device, args)
+        val_loss = val_stats.get("loss", None)
+
+        if val_loss is not None and val_loss < best_val_loss and args.output_dir:
+            best_val_loss = val_loss
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
+                        **{f'val_{k}': v for k, v in val_stats.items()},
                         'epoch': epoch,}
 
         if args.output_dir and misc.is_main_process():
