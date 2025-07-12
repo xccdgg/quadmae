@@ -171,12 +171,14 @@ class Smooth(nn.Module):
     def predict(self, x: torch.Tensor, n: int, batch_size: int = 512) -> int:
         """Majority‑vote prediction over *n* noise samples."""
         img = self._resize(self._ensure_tensor(x))
-        imgs = img.unsqueeze(0).repeat(n, 1, 1, 1)
-        imgs = self._add_noise(imgs)
 
         counts = np.zeros(self.num_classes, dtype=int)
-        for s in range(0, n, batch_size):
-            logits = self.base_classifier(imgs[s : s + batch_size])
+        for start in range(0, n, batch_size):
+            end = min(start + batch_size, n)
+            b = end - start
+            imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
+            imgs = self._add_noise(imgs)
+            logits = self.base_classifier(imgs)
             preds = logits.argmax(1).cpu().numpy()
             for p in preds:
                 counts[p] += 1
@@ -218,11 +220,13 @@ class Smooth(nn.Module):
     # ------------------------------------------------------------------
     def _sample_predict(self, img: torch.Tensor, m: int, bs: int) -> int:
         counts = np.zeros(self.num_classes, dtype=int)
-        imgs = img.unsqueeze(0).repeat(m, 1, 1, 1)
-        imgs = self._add_noise(imgs).to(self.device)
         with torch.no_grad():
-            for s in range(0, m, bs):
-                preds = self.base_classifier(imgs[s : s + bs]).argmax(1).cpu().numpy()
+            for start in range(0, m, bs):
+                end = min(start + bs, m)
+                b = end - start
+                imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
+                imgs = self._add_noise(imgs).to(self.device)
+                preds = self.base_classifier(imgs).argmax(1).cpu().numpy()
                 for p in preds:
                     counts[p] += 1
         if (counts == counts.max()).sum() != 1:
@@ -231,10 +235,12 @@ class Smooth(nn.Module):
 
     def _sample_count(self, img: torch.Tensor, cls: int, m: int, bs: int) -> int:
         cnt = 0
-        imgs = img.unsqueeze(0).repeat(m, 1, 1, 1)
-        imgs = self._add_noise(imgs).to(self.device)
         with torch.no_grad():
-            for s in range(0, m, bs):
-                preds = self.base_classifier(imgs[s : s + bs]).argmax(1)
+            for start in range(0, m, bs):
+                end = min(start + bs, m)
+                b = end - start
+                imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
+                imgs = self._add_noise(imgs).to(self.device)
+                preds = self.base_classifier(imgs).argmax(1)
                 cnt += int((preds == cls).sum().item())
         return cnt
