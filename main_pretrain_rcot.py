@@ -107,6 +107,8 @@ def get_args_parser():
     parser.add_argument('--seed', default=0, type=int)
     parser.add_argument('--resume', default=r"C:\Users\车\Downloads\checkpoint-40 (2).pth",
                         help='resume from checkpoint')
+    parser.add_argument('--only_model', action='store_true',
+                        help='only load model weights when resuming')
 
     parser.add_argument('--start_epoch', default=0, type=int, metavar='N',
                         help='start epoch')
@@ -257,7 +259,13 @@ def main(args):
     print(f"[Opt] base_lr={args.lr:.2e}, new_module_lr={new_lr:.2e}")
     loss_scaler = NativeScaler()
 
-    misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
+    misc.load_model(
+        args=args,
+        model_without_ddp=model_without_ddp,
+        optimizer=optimizer,
+        loss_scaler=loss_scaler,
+        load_optimizer=not args.only_model,
+    )
 
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
