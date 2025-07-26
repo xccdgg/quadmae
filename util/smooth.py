@@ -20,7 +20,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.stats import beta, norm
+from scipy.stats import norm
+from statsmodels.stats.proportion import proportion_confint
 
 from util.quadatasetgpu import QuaternionWaveletNoise
 
@@ -144,7 +145,12 @@ class Smooth(nn.Module):
     def _resize(self, x: torch.Tensor) -> torch.Tensor:
         if x.shape[-1] == self.input_size:
             return x
-        return F.interpolate(x.unsqueeze(0), size=self.input_size, mode="bicubic", align_corners=False).squeeze(0)
+        return F.interpolate(
+            x.unsqueeze(0),
+            size=self.input_size,
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze(0)
 
     # ------------------------------------------------------------------
     # core: add noise + soft‑clamp -------------------------------------
@@ -160,8 +166,13 @@ class Smooth(nn.Module):
                 device=self.device,
             )
             return self.soft_clamp(noised)
+
         noise = torch.randn_like(imgs) * self.sigma_pix
-        return (imgs + noise).clamp(0.0, 1.0)
+        return imgs + noise
+
+    def _lower_confidence_bound(self, NA: int, N: int, alpha: float) -> float:
+        """Clopper-Pearson lower bound for a Bernoulli proportion."""
+        return float(proportion_confint(NA, N, alpha=2 * alpha, method="beta")[0])
 
     # ------------------------------------------------------------------
     # predict -----------------------------------------------------------
@@ -169,7 +180,7 @@ class Smooth(nn.Module):
     @torch.no_grad()
     def predict(self, x: torch.Tensor, n: int, batch_size: int = 512) -> int:
         """Majority‑vote prediction over *n* noise samples."""
-        img = self._resize(self._ensure_tensor(x))
+        img = self._ensure_tensor(x)
 
         counts = np.zeros(self.num_classes, dtype=int)
         for start in range(0, n, batch_size):
@@ -177,6 +188,13 @@ class Smooth(nn.Module):
             b = end - start
             imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
             imgs = self._add_noise(imgs)
+            if imgs.shape[-1] != self.input_size:
+                imgs = F.interpolate(
+                    imgs,
+                    size=self.input_size,
+                    mode="bicubic",
+                    align_corners=False,
+                )
             logits = self.base_classifier(imgs)
             preds = logits.argmax(1).cpu().numpy()
             for p in preds:
@@ -197,7 +215,7 @@ class Smooth(nn.Module):
         batch_size: int,
         y: Optional[int] = None,
     ) -> tuple[int, float]:
-        img = self._resize(self._ensure_tensor(x))
+        img = self._ensure_tensor(x)
 
         # coarse prediction
         top = self._sample_predict(img, n0, batch_size)
@@ -206,11 +224,10 @@ class Smooth(nn.Module):
 
         # main sampling for p_lower
         countA = self._sample_count(img, top, n, batch_size)
-        p_lower = 0.0 if countA == 0 else beta.ppf(alpha / 2.0, countA, n - countA + 1)
+        p_lower = self._lower_confidence_bound(countA, n, alpha)
         if p_lower < 0.5:
             return Smooth.ABSTAIN, 0.0
 
-        # 最小像素 Std = σ_L /(2√3)
         radius = self.sigma_pix * norm.ppf(p_lower)
         return top, radius
 
@@ -224,7 +241,15 @@ class Smooth(nn.Module):
                 end = min(start + bs, m)
                 b = end - start
                 imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
-                imgs = self._add_noise(imgs).to(self.device)
+                imgs = self._add_noise(imgs)
+                if imgs.shape[-1] != self.input_size:
+                    imgs = F.interpolate(
+                        imgs,
+                        size=self.input_size,
+                        mode="bicubic",
+                        align_corners=False,
+                    )
+                imgs = imgs.to(self.device)
                 preds = self.base_classifier(imgs).argmax(1).cpu().numpy()
                 for p in preds:
                     counts[p] += 1
@@ -239,7 +264,15 @@ class Smooth(nn.Module):
                 end = min(start + bs, m)
                 b = end - start
                 imgs = img.unsqueeze(0).expand(b, -1, -1, -1)
-                imgs = self._add_noise(imgs).to(self.device)
+                imgs = self._add_noise(imgs)
+                if imgs.shape[-1] != self.input_size:
+                    imgs = F.interpolate(
+                        imgs,
+                        size=self.input_size,
+                        mode="bicubic",
+                        align_corners=False,
+                    )
+                imgs = imgs.to(self.device)
                 preds = self.base_classifier(imgs).argmax(1)
                 cnt += int((preds == cls).sum().item())
         return cnt

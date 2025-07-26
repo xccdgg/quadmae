@@ -120,7 +120,7 @@ class AddNoise:
 
         # ---------------- 像素高斯 ----------------
         noise = torch.randn_like(img) * self.sigma_pix
-        noisy = (img + noise).clamp(0.0, 1.0)
+        noisy = img + noise
         return noisy.to(dtype=torch.float16)
 
 
@@ -144,10 +144,7 @@ class NoisyImageDataset(Dataset):
     ) -> None:
         self.batch_size = batch_size
 
-        transform = [
-            transforms.Resize((input_size, input_size)),
-            transforms.ToTensor(),
-        ]
+        transform = [transforms.ToTensor()]
         if noise_sigma and noise_sigma > 0:
             transform.append(
                 AddNoise(
@@ -157,6 +154,7 @@ class NoisyImageDataset(Dataset):
                     ratio=ratio,
                 )
             )
+        transform.append(transforms.Resize((input_size, input_size)))
         self.transform = transforms.Compose(transform)
 
         self.dataset = CIFAR10(
