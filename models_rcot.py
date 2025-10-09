@@ -77,7 +77,7 @@ class ConditionalTransformerBlock(nn.Module):
         ffn_out = self.ffn(self.norm2(x))
         x = x + ffn_out
         if cond is not None:
-            x = self.film(cond, x)
+            x = self.film(cond, x)  # 修正调用方式，FiLMBlock 继承 nn.Module，可直接调用
         return x
 
 
@@ -212,10 +212,10 @@ class TwoStageDMAE(nn.Module):
         loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
 
         x_hat = self.base.unpatchify(pred_tokens)
-        r = imgs_norm - x_hat
-        cond = self.res_encoder(r)
+        r = imgs_noised_norm - x_hat  # 修改为输入图片 - 恢复结果
+        cond = self.res_encoder(r)  # ResidualEncoder 继承 nn.Module，可直接调用
         tokens2 = features[:, 1:, :]
-        x_refined = self.decoder2(tokens2, cond)
+        x_refined = self.decoder2(tokens2, cond)  # ConditionalDecoder 继承 nn.Module，可直接调用
         loss2 = ((x_refined - imgs_norm) ** 2).mean()
         return x_hat, r, x_refined, loss1, loss2
 
@@ -251,20 +251,10 @@ class TwoStageDMAE(nn.Module):
         if not use_rcot:
             return (x_hat * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
-        if x_clean is not None:
-            if x_clean.shape[-1] != self.base.patch_embed.img_size:
-                x_clean = transforms.Resize(
-                    self.base.patch_embed.img_size,
-                    interpolation=PIL.Image.BICUBIC,
-                )(x_clean)
-            x_clean = (x_clean - self.base.mean) / self.base.std
-            r = x_clean - x_hat
-        else:
-            r = x_norm - x_hat
-
-        cond = self.res_encoder(r)
+        r = x_norm - x_hat  # 始终用输入图片 - 恢复结果
+        cond = self.res_encoder(r)  # ResidualEncoder 继承 nn.Module，可直接调用
         tokens2 = features[:, 1:, :]
-        x_refined = self.decoder2(tokens2, cond)
+        x_refined = self.decoder2(tokens2, cond)  # ConditionalDecoder 继承 nn.Module，可直接调用
         return (x_refined * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
 
