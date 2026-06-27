@@ -125,20 +125,39 @@ def train_one_epoch(
             autocast_fn = torch.cuda.amp.autocast  # pragma: no cover
 
         with autocast_fn("cuda"):
-            x_hat, r, x_refined, loss1, loss2 = model(
-                samples, mask_ratio=args.mask_ratio
-            )
-            loss = loss1 * args.loss1_weight + loss2 * args.loss2_weight
+            outputs = model(samples, mask_ratio=args.mask_ratio)
+            if isinstance(outputs, tuple) and len(outputs) == 6:
+                x_hat, r, x_refined, loss1, loss2, _ = outputs
+                loss = loss1 * args.loss1_weight + loss2 * args.loss2_weight
+                aux_metrics = {}
+            elif isinstance(outputs, tuple) and len(outputs) == 4:
+                loss, _, _, aux_metrics = outputs
+                x_hat = r = x_refined = loss1 = loss2 = None
+            elif isinstance(outputs, tuple) and len(outputs) == 3:
+                loss, _, _ = outputs
+                x_hat = r = x_refined = loss1 = loss2 = None
+                aux_metrics = {}
+            else:
+                raise ValueError("Unexpected pretraining model output format")
 
         # visualise & write debug once per epoch when allowed
-        if do_debug and data_iter_step == 0 and misc.is_main_process():
+        if do_debug and data_iter_step == 0 and misc.is_main_process() and x_hat is not None:
             _save_visual_debug(samples, x_hat, r, x_refined, debug_dir, model)
 
         # debug text (only when enabled)
         if do_debug and debug_fp is not None:
+            if loss1 is not None and loss2 is not None:
+                debug_msg = (
+                    f"[Debug] Epoch {epoch}, Batch {data_iter_step}: "
+                    f"loss1={loss1.item():.4f}, loss2={loss2.item():.4f}\n"
+                )
+            else:
+                debug_msg = (
+                    f"[Debug] Epoch {epoch}, Batch {data_iter_step}: "
+                    f"loss={loss.item():.4f}\n"
+                )
             debug_fp.write(
-                f"[Debug] Epoch {epoch}, Batch {data_iter_step}: "
-                f"loss1={loss1.item():.4f}, loss2={loss2.item():.4f}\n"
+                debug_msg
             )
 
         loss_value = loss.item()
@@ -161,6 +180,8 @@ def train_one_epoch(
 
         # ---- logging -------------------------------------------------------------------
         metric_logger.update(loss=loss_value)
+        if isinstance(aux_metrics, dict):
+            metric_logger.update(**aux_metrics)
         lr_current = optimizer.param_groups[0]["lr"]
         metric_logger.update(lr=lr_current)
 
@@ -198,12 +219,23 @@ def evaluate(model: torch.nn.Module, data_loader: Iterable, device: torch.device
             autocast_fn = torch.cuda.amp.autocast
 
         with autocast_fn("cuda"):
-            _, _, _, loss1, loss2 = model(samples, mask_ratio=args.mask_ratio)
-            loss = loss1 * args.loss1_weight + loss2 * args.loss2_weight
-
-        metric_logger.update(loss=loss.item())
-        metric_logger.update(loss1=loss1.item())
-        metric_logger.update(loss2=loss2.item())
+            outputs = model(samples, mask_ratio=args.mask_ratio)
+            if isinstance(outputs, tuple) and len(outputs) == 6:
+                _, _, _, loss1, loss2, _ = outputs
+                loss = loss1 * args.loss1_weight + loss2 * args.loss2_weight
+                metric_logger.update(loss=loss.item())
+                metric_logger.update(loss1=loss1.item())
+                metric_logger.update(loss2=loss2.item())
+            elif isinstance(outputs, tuple) and len(outputs) == 4:
+                loss, _, _, aux_metrics = outputs
+                metric_logger.update(loss=loss.item())
+                if isinstance(aux_metrics, dict):
+                    metric_logger.update(**aux_metrics)
+            elif isinstance(outputs, tuple) and len(outputs) == 3:
+                loss, _, _ = outputs
+                metric_logger.update(loss=loss.item())
+            else:
+                raise ValueError("Unexpected pretraining model output format")
 
     metric_logger.synchronize_between_processes()
     print("Averaged val stats:", metric_logger)

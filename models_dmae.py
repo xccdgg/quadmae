@@ -10,6 +10,9 @@ from util.pos_embed import get_2d_sincos_pos_embed
 import torchvision.transforms as transforms
 import PIL
 
+from util.noise import add_noise, to_bool
+from util.qwt_prior import DeterministicQWTPrior
+
 
 class DenoisingMaskedAutoencoderViT(nn.Module):
     """ Denoising Masked Autoencoder with VisionTransformer backbone
@@ -18,11 +21,22 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
                  embed_dim=1024, depth=24, num_heads=16,
                  decoder_embed_dim=512, decoder_depth=8, decoder_num_heads=16,
                  mlp_ratio=4., norm_layer=nn.LayerNorm, norm_pix_loss=False,
-                 sigma=0.5):
+                 sigma=0.5, use_head=False,
+                 use_quaternion_noise=False, levels=1, ratio=3.0,
+                 use_qwt_prior_adapter=False, qwt_prior_levels=1,
+                 subband_loss_weight=0.1, subband_loss_detail_weight=0.5):
         super().__init__()
 
         # the standard variance of noise
         self.sigma = sigma
+        self.use_head = use_head
+        self.use_quaternion_noise = to_bool(use_quaternion_noise)
+        self.levels = int(levels)
+        self.ratio = float(ratio)
+        self.use_qwt_prior_adapter = to_bool(use_qwt_prior_adapter)
+        self.qwt_prior_levels = int(qwt_prior_levels)
+        self.subband_loss_weight = float(subband_loss_weight)
+        self.subband_loss_detail_weight = float(subband_loss_detail_weight)
 
         # --------------------------------------------------------------------------
         # MAE encoder specifics
@@ -61,6 +75,18 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         self.decoder_embed_dim = decoder_embed_dim
         self.decoder_depth = decoder_depth
         self.decoder_num_heads = decoder_num_heads
+        if self.use_qwt_prior_adapter:
+            self.qwt_prior_extractor = DeterministicQWTPrior(
+                patch_size=self.patch_embed.patch_size[0],
+                levels=self.qwt_prior_levels,
+            )
+            self.prior_ln = nn.LayerNorm(4)
+            self.prior_proj = nn.Linear(4, embed_dim, bias=True)
+            self.prior_gate = nn.Parameter(torch.zeros(1))
+            torch.nn.init.normal_(self.prior_proj.weight, std=1e-3)
+            nn.init.constant_(self.prior_proj.bias, 0.0)
+        else:
+            self.qwt_prior_extractor = None
 
     def initialize_weights(self):
         # initialization
@@ -151,9 +177,24 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
 
         return x_masked, mask, ids_restore
 
-    def forward_encoder(self, x, mask_ratio):
+    def _apply_qwt_prior(self, tokens, images):
+        if not self.use_qwt_prior_adapter:
+            return tokens
+
+        prior = self.qwt_prior_extractor.extract_patch_prior(images)
+        if prior.shape[1] != tokens.shape[1]:
+            raise ValueError(
+                f"QWT prior token count {prior.shape[1]} does not match patch tokens {tokens.shape[1]}"
+            )
+        prior = prior.to(device=tokens.device, dtype=tokens.dtype)
+        prior = self.prior_proj(self.prior_ln(prior))
+        return tokens + self.prior_gate.view(1, 1, 1) * prior
+
+    def forward_encoder(self, x, mask_ratio, prior_images=None):
         # embed patches
         x = self.patch_embed(x)
+        if prior_images is not None:
+            x = self._apply_qwt_prior(x, prior_images)
 
         # add pos embed w/o cls token
         # x: (N, H*W/patch_size**2, patch_size**2 *3)
@@ -220,21 +261,45 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
-        """Forward with noise injected after normalization."""
-        imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
+        imgs_noised = add_noise(
+            imgs,
+            self.sigma,
+            use_quaternion_noise=self.use_quaternion_noise,
+            levels=self.levels,
+            ratio=self.ratio,
+            device=imgs.device,
+        )
+
+        resize = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)
+        imgs = resize(imgs)
+        imgs_noised = resize(imgs_noised)
+        prior_images = imgs_noised
 
         if self.mean.device != imgs.device:
             self.mean = self.mean.to(imgs.device)
             self.std = self.std.to(imgs.device)
 
         imgs_norm = (imgs - self.mean) / self.std
-        noise_norm = torch.randn_like(imgs_norm) * (self.sigma / self.std)
-        imgs_noised = imgs_norm + noise_norm
+        imgs_noised = (imgs_noised - self.mean) / self.std
 
-        latent, mask, ids_restore = self.forward_encoder(imgs_noised, mask_ratio)
+        latent, mask, ids_restore = self.forward_encoder(
+            imgs_noised,
+            mask_ratio,
+            prior_images=prior_images if self.use_qwt_prior_adapter else None,
+        )
         pred = self.forward_decoder(latent, ids_restore)  # [N, L, p*p*3]
-        loss = self.forward_loss(imgs_norm, pred, mask)
-        return loss, pred, mask
+        loss_pixel = self.forward_loss(imgs_norm, pred, mask)
+        if self.use_qwt_prior_adapter and self.subband_loss_weight > 0:
+            pred_imgs = self.unpatchify(pred) * self.std + self.mean
+            loss_subband, sub_metrics = self.qwt_prior_extractor.subband_reconstruction_loss(
+                pred_imgs,
+                imgs,
+                detail_weight=self.subband_loss_detail_weight,
+            )
+            loss = loss_pixel + self.subband_loss_weight * loss_subband
+            aux_metrics = {"loss_pixel": loss_pixel.detach(), **sub_metrics, "loss_total": loss.detach()}
+            return loss, pred, mask, aux_metrics
+        return loss_pixel, pred, mask
 
 
 def dmae_vit_base_patch16_dec512d8b(**kwargs):

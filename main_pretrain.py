@@ -18,6 +18,7 @@ assert timm.__version__ == "0.5.4"  # version check
 import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
+from util.datasets import FilteredImageFolder, load_class_subset_file
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 
 import models_dmae
@@ -49,6 +50,24 @@ def get_args_parser():
 
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
+    parser.add_argument(
+        '--use_quaternion_noise',
+        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+        default=False,
+        help='Use quaternion wavelet noise instead of pixel Gaussian',
+    )
+    parser.add_argument('--levels', default=1, type=int,
+                        help='Levels of QWT decomposition for noise')
+    parser.add_argument('--ratio', default=3.0, type=float,
+                        help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Weight of the subband-aware auxiliary pretraining loss')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Weight applied to the detail-energy term inside subband loss')
 
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -67,6 +86,8 @@ def get_args_parser():
     # Dataset parameters
     parser.add_argument('--data_path', default='', type=str,
                         help='dataset path')
+    parser.add_argument('--class_subset_file', default='', type=str,
+                        help='optional txt file with one wnid per line to restrict ImageNet classes')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -94,6 +115,9 @@ def get_args_parser():
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
 
+    # Add --use_head argument
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
+
     return parser
 
 
@@ -120,7 +144,12 @@ def main(args):
             transforms.ToTensor(),
             # transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+    class_subset = load_class_subset_file(args.class_subset_file)
+    dataset_train = FilteredImageFolder(
+        os.path.join(args.data_path, 'train'),
+        transform=transform_train,
+        class_subset=class_subset,
+    )
     print(dataset_train)
 
     if True:  # args.distributed:
@@ -148,7 +177,18 @@ def main(args):
     )
     
     # define the model
-    model = models_dmae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, sigma=args.sigma)
+    model = models_dmae.__dict__[args.model](
+        norm_pix_loss=args.norm_pix_loss,
+        sigma=args.sigma,
+        use_head=args.use_head,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
+        use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+        qwt_prior_levels=args.qwt_prior_levels,
+        subband_loss_weight=args.subband_loss_weight,
+        subband_loss_detail_weight=args.subband_loss_detail_weight,
+    )
 
     model.to(device)
 

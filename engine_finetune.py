@@ -67,7 +67,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         with torch.cuda.amp.autocast():
             outputs = model(samples)
-            loss = criterion(outputs, targets)
+            if isinstance(outputs, tuple) and len(outputs) == 6:
+                # RCOT-DMAE联合结构，分类用cls_logits
+                cls_logits = outputs[-1]
+                loss = criterion(cls_logits, targets)
+            else:
+                loss = criterion(outputs, targets)
 
         loss_value = loss.item()
 
@@ -157,10 +162,18 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
         if mixup_fn is not None:
             samples, targets = mixup_fn(samples, targets)
 
-        with torch.cuda.amp.autocast():
+        autocast_cm = getattr(torch.amp, 'autocast', None)
+        autocast_kwargs = {'device_type': 'cuda'} if autocast_cm is not None else {}
+        if autocast_cm is None:
+            autocast_cm = torch.cuda.amp.autocast  # backward compatibility
+        with autocast_cm(**autocast_kwargs):
             outputs = model(samples)
-            loss_nat = criterion(outputs, targets)
-            loss_reg = consistency_loss(outputs.chunk(args.num_noise_sample), args.reg_lbd, args.reg_eta)
+            logits = outputs[-1] if isinstance(outputs, tuple) else outputs
+            if logits is None:
+                raise ValueError("Model did not return classification logits. Please ensure use_head=True and model结构支持分类头。")
+            loss_nat = criterion(logits, targets)
+            logits_chunks = logits.chunk(args.num_noise_sample)
+            loss_reg = consistency_loss(list(logits_chunks), args.reg_lbd, args.reg_eta)
             loss = loss_nat + loss_reg
 
         loss_value = loss.item()
@@ -231,8 +244,13 @@ def evaluate(data_loader, model, device):
         # compute output
         with torch.cuda.amp.autocast():
             output = model(images)
-            loss = criterion(output, target)
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            if isinstance(output, tuple) and len(output) == 6:
+                cls_logits = output[-1]
+                loss = criterion(cls_logits, target)
+                acc1, acc5 = accuracy(cls_logits, target, topk=(1, 5))
+            else:
+                loss = criterion(output, target)
+                acc1, acc5 = accuracy(output, target, topk=(1, 5))
 
         batch_size = images.shape[0]
         metric_logger.update(loss=loss.item())
@@ -297,11 +315,18 @@ def evaluate_radius_0(
             noisy = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(noisy)
             noisy = noisy.to(device, dtype=next(model.parameters()).dtype, non_blocking=True)
             # compute output
-            with torch.cuda.amp.autocast():
+            autocast_cm = getattr(torch.amp, 'autocast', None)
+            autocast_kwargs = {'device_type': 'cuda'} if autocast_cm is not None else {}
+            if autocast_cm is None:
+                autocast_cm = torch.cuda.amp.autocast  # backward compatibility
+            with autocast_cm(**autocast_kwargs):
                 # (b*s, num_classes)
                 output = model(noisy)
+            logits = output[-1] if isinstance(output, tuple) else output
+            if logits is None:
+                raise ValueError("Model did not return classification logits. 请确认 use_head=True 且模型包含分类头。")
             # (b, s)
-            predict.append(output.argmax(-1).reshape(batch_size, -1))
+            predict.append(logits.argmax(-1).reshape(batch_size, -1))
         predict = torch.cat(predict, dim=-1)
         predict, _ = predict.mode()
         acc1 = (predict == target).sum().float() * 100 / batch_size
@@ -319,6 +344,7 @@ def certify_evaluate_dist(
     device,
     threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5],
     num=10000,
+    cert_batch_size=1000,
     restorer=None,
     use_rcot: bool = False,
 ):
@@ -340,7 +366,7 @@ def certify_evaluate_dist(
         assert batch_size == 1
 
         with torch.cuda.amp.autocast():
-            output, radius = model.certify(images, 100, num, 0.001, 1000, target.item())
+            output, radius = model.certify(images, 100, num, 0.001, cert_batch_size, target.item())
             
         for thres in threshold:
             correct = float(radius >= thres and output == target)

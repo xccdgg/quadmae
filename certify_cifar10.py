@@ -11,13 +11,14 @@ import util.misc as misc
 from util.smooth import Smooth
 
 import models_vit
+import models_rcot
 
 from engine_finetune import certify_evaluate_dist
 from torchvision import transforms, datasets
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Test of certified accuracy', add_help=False)
+    parser = argparse.ArgumentParser('RCOT certification on CIFAR-10', add_help=False)
     parser.add_argument('--batch_size', default=1, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
 
@@ -86,11 +87,20 @@ def get_args_parser():
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
 
     parser.add_argument('--use_rcot', action='store_true',
                         help='Apply RCOT restoration before certification')
     parser.add_argument('--rcot_ckpt', default='', type=str,
                         help='path to RCOT checkpoint')
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
 
     return parser
 
@@ -160,13 +170,40 @@ def main(args):
         drop_last=False
     )
     
-    model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool=args.global_pool,
-    )
-    model.mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, 3, 1, 1)
-    model.std = torch.tensor([0.2471, 0.2435, 0.2616]).reshape(1, 3, 1, 1)
+    rcot_model = False
+    cifar_mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, 3, 1, 1)
+    cifar_std = torch.tensor([0.2471, 0.2435, 0.2616]).reshape(1, 3, 1, 1)
+
+    if args.model in models_vit.__dict__:
+        model = models_vit.__dict__[args.model](
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
+            use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+            qwt_prior_levels=args.qwt_prior_levels,
+        )
+        model.mean = cifar_mean.clone()
+        model.std = cifar_std.clone()
+    elif hasattr(models_rcot, args.model):
+        rcot_model = True
+        ctor = getattr(models_rcot, args.model)
+        model = ctor(use_head=True, num_classes=args.nb_classes)
+        if hasattr(model, 'mean'):
+            model.mean = cifar_mean.clone()
+            model.std = cifar_std.clone()
+        if hasattr(model, 'base'):
+            model.base.mean = cifar_mean.clone()
+            model.base.std = cifar_std.clone()
+    else:
+        raise KeyError(f"Unknown model architecture: {args.model}")
+    if rcot_model and hasattr(model, 'use_head'):
+        head_module = getattr(model, 'head', None)
+        if head_module is None or not hasattr(head_module, 'in_features'):
+            raise RuntimeError('Unable to determine RCOT classification head input dimension.')
+        if getattr(head_module, 'out_features', None) != args.nb_classes:
+            model.head = torch.nn.Linear(head_module.in_features, args.nb_classes)
+        model.use_head = True
+
     model.to(device)
 
     model_without_ddp = model
@@ -183,20 +220,33 @@ def main(args):
 
     restorer = None
     if args.use_rcot:
-        import models_rcot
-        restorer = models_rcot.rcot_dmae_vit_base_patch16()
+        restorer = models_rcot.rcot_dmae_vit_base_patch16(use_head=args.use_head, num_classes=args.nb_classes)
         if args.rcot_ckpt:
             ckpt = torch.load(args.rcot_ckpt, map_location="cpu")
             restorer.load_state_dict(ckpt.get("model", ckpt), strict=False)
         restorer.to(device)
         restorer.eval()
 
+    class _LogitsOnlyModule(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+        def forward(self, x):
+            out = self.module(x)
+            return out[-1] if isinstance(out, tuple) else out
+
+
     # switch to evaluation mode
     model.eval()
     threshold=[0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2, 3]
+    classifier_for_smooth = model
+    if rcot_model:
+        classifier_for_smooth = _LogitsOnlyModule(model)
+
     if args.sigma:
         smoothed_classifier = Smooth(
-            model,
+            classifier_for_smooth,
             num_classes,
             args.sigma,
             use_quaternion_noise=args.use_quaternion_noise,
@@ -223,7 +273,7 @@ def main(args):
     else: # test on sigma = (0.25, 0.5, 1.0)
         for sigma in [0.25, 0.5, 1.0]:
             smoothed_classifier = Smooth(
-                model,
+                classifier_for_smooth,
                 num_classes,
                 sigma,
                 use_quaternion_noise=args.use_quaternion_noise,

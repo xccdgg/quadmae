@@ -49,6 +49,24 @@ def get_args_parser():
 
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
+    parser.add_argument(
+        '--use_quaternion_noise',
+        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+        default=False,
+        help='Use quaternion wavelet noise instead of pixel Gaussian',
+    )
+    parser.add_argument('--levels', default=1, type=int,
+                        help='Levels of QWT decomposition for noise')
+    parser.add_argument('--ratio', default=3.0, type=float,
+                        help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Weight of the subband-aware auxiliary pretraining loss')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Weight applied to the detail-energy term inside subband loss')
 
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.05,
@@ -92,6 +110,9 @@ def get_args_parser():
     parser.add_argument('--dist_on_itp', action='store_true')
     parser.add_argument('--dist_url', default='env://',
                         help='url used to set up distributed training')
+
+    # RCOT specific arguments
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
 
     return parser
 
@@ -150,7 +171,18 @@ def main(args):
     )
     
     # define the model
-    model = models_dmae.__dict__[args.model](norm_pix_loss=args.norm_pix_loss, sigma=args.sigma)
+    model = models_dmae.__dict__[args.model](
+        norm_pix_loss=args.norm_pix_loss,
+        sigma=args.sigma,
+        use_head=args.use_head,
+        use_quaternion_noise=args.use_quaternion_noise,
+        levels=args.levels,
+        ratio=args.ratio,
+        use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+        qwt_prior_levels=args.qwt_prior_levels,
+        subband_loss_weight=args.subband_loss_weight,
+        subband_loss_detail_weight=args.subband_loss_detail_weight,
+    )
     model.mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, 3, 1, 1)
     model.std = torch.tensor([0.2471, 0.2435, 0.2616]).reshape(1, 3, 1, 1)
 
@@ -193,10 +225,11 @@ def main(args):
             log_writer=log_writer,
             args=args
         )
-        if args.output_dir and (epoch % 20 == 0 or epoch + 1 == args.epochs):
+        if args.output_dir:
             misc.save_model(
                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
                 loss_scaler=loss_scaler, epoch=epoch)
+            misc.cleanup_epoch_checkpoints(args.output_dir, keep_epoch=epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         'epoch': epoch,}

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
@@ -25,12 +26,97 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from torchvision import datasets, transforms
 
 import models_vit
+import models_rcot  # 鏂板锛氬鍏COT妯″瀷
 
 from engine_finetune import *
 
 
+def _load_pretrained_with_smart_prefix(model: nn.Module, checkpoint_model: dict, args) -> None:
+    """
+    Load a checkpoint into `model` while adapting key prefixes intelligently:
+    - Preserve `base.` prefix for RCOT/TwoStageDMAE models (model has `base.*`).
+    - Add `base.` prefix for pure DMAE checkpoints when loading into RCOT models.
+    - Strip `base.` when loading RCOT checkpoints into plain ViT models.
+    - Interpolate position embedding using a temporary dict without changing prefixes for load.
+    Also removes mismatched classification head weights and reports unexpected missing keys.
+    """
+    # Unwrap state_dict-like containers and ensure float tensors
+    if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, "state_dict"):
+        checkpoint_model = checkpoint_model.state_dict()
+
+    ckpt_items = {}
+    for k, v in checkpoint_model.items():
+        if isinstance(v, torch.Tensor):
+            v = v.float()
+        # strip potential DistributedDataParallel prefix
+        if k.startswith("module."):
+            k = k[7:]
+        ckpt_items[k] = v
+
+    state_dict = model.state_dict()
+
+    # Map keys to expected names in current model
+    mapped = {}
+    for k, v in ckpt_items.items():
+        if k in state_dict:
+            mapped[k] = v
+        elif ("base." + k) in state_dict:
+            mapped["base." + k] = v
+        elif k.startswith("base.") and k[5:] in state_dict:
+            mapped[k[5:]] = v
+        # else: drop unknown keys
+
+    # Interpolate pos_embed in a temporary dict (expects key name 'pos_embed')
+    backbone = model.base if hasattr(model, "base") else model
+    expected_pos_key = "base.pos_embed" if "base.pos_embed" in state_dict else ("pos_embed" if "pos_embed" in state_dict else None)
+    if expected_pos_key and (expected_pos_key in mapped):
+        tmp = {"pos_embed": mapped[expected_pos_key]}
+        interpolate_pos_embed(backbone, tmp)
+        mapped[expected_pos_key] = tmp["pos_embed"]
+
+    # Remove mismatched classification head weights (shape differs due to num_classes)
+    head_keys = [k for k in ("head.weight", "head.bias") if k in state_dict]
+    for k in head_keys:
+        if k in mapped and mapped[k].shape != state_dict[k].shape:
+            print(f"Removing key {k} from pretrained checkpoint")
+            del mapped[k]
+
+    # Load
+    msg = model.load_state_dict(mapped, strict=False)
+    print(msg)
+
+    # Ensure all params are float32
+    for _, param in model.named_parameters():
+        if isinstance(param, nn.Parameter) and param.dtype != torch.float32:
+            param.data = param.data.float()
+
+    # Report unexpected missing keys (allow classifier and optional fc_norm)
+    allowed_missing = set(head_keys)
+    if getattr(args, "use_qwt_prior_adapter", False):
+        allowed_missing.update({
+            'prior_gate',
+            'prior_ln.weight',
+            'prior_ln.bias',
+            'prior_proj.weight',
+            'prior_proj.bias',
+        })
+    # Allow entire RCOT classifier module to be absent from checkpoint (pretrain often has no classifier)
+    if hasattr(model, 'classifier'):
+        allowed_missing.update({k for k in state_dict.keys() if k.startswith('classifier.')})
+    if getattr(args, "global_pool", False):
+        allowed_missing.update({"fc_norm.weight", "fc_norm.bias"})
+    unexpected_missing = set(msg.missing_keys) - allowed_missing
+    if unexpected_missing:
+        print("Unexpected missing keys (not allowed):")
+        for key in sorted(unexpected_missing):
+            print(f"  {key}")
+    else:
+        print("All missing keys are expected.")
+
+
+
 def get_args_parser():
-    parser = argparse.ArgumentParser('MAE fine-tuning for image classification', add_help=False)
+    parser = argparse.ArgumentParser('RCOT finetuning on CIFAR-10', add_help=False)
     parser.add_argument('--batch_size', default=64, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
     parser.add_argument('--epochs', default=50, type=int)
@@ -153,6 +239,14 @@ def get_args_parser():
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
 
@@ -165,6 +259,7 @@ def get_args_parser():
                         help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
                         help='Weight of entropy')
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
 
     return parser
 
@@ -240,6 +335,7 @@ def main(args):
                 shuffle=True)  # shuffle=True to reduce monitor bias
         else:
             sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+            sampler_certify = torch.utils.data.SequentialSampler(dataset_certify)
     else:
         global_rank = 0
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
@@ -285,123 +381,41 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
-    model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool=args.global_pool,
-    )
+    # 鏀寔閫氳繃鍙傛暟閫夋嫨RCOT-DMAE鑱斿悎缁撴瀯
+    if args.model == 'rcot_dmae_vit_base_patch16':
+        model = models_rcot.rcot_dmae_vit_base_patch16(use_head=args.use_head, num_classes=args.nb_classes)
+    else:
+        model = models_vit.__dict__[args.model](
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
+            use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+            qwt_prior_levels=args.qwt_prior_levels,
+        )
+
     model.mean = torch.tensor([0.4914, 0.4822, 0.4465]).reshape(1, 3, 1, 1)
     model.std = torch.tensor([0.2471, 0.2435, 0.2616]).reshape(1, 3, 1, 1)
-    if args.resume != None:
+    if args.resume is not None:
         checkpoint = torch.load(args.resume, map_location='cpu')
-
         print("Load pre-trained checkpoint from: %s" % args.resume)
-        checkpoint_model = checkpoint['model']
-        # —— 兼容 RCOT: 移除 checkpoint_model 中所有 'base.' 前缀 ——
-        if any(k.startswith('base.') for k in checkpoint_model.keys()):
-            new_ckpt = {}
-            for k, v in checkpoint_model.items():
-                if k.startswith('base.'):
-                    new_key = k[len('base.'):]
-                else:
-                    new_key = k
-                new_ckpt[new_key] = v
-            checkpoint_model = new_ckpt
+        checkpoint_model = checkpoint.get('model', checkpoint)
+        _load_pretrained_with_smart_prefix(model, checkpoint_model, args)
 
-        state_dict = model.state_dict()
-        for k in ['head.weight', 'head.bias']:
-            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                print(f"Removing key {k} from pretrained checkpoint")
-                del checkpoint_model[k]
 
-        # interpolate position embedding
-        interpolate_pos_embed(model, checkpoint_model)
-
-        # load pre-trained model
-        msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg)
-
-        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
-        for name, param in model.named_parameters():
-            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
-                param.data = param.data.float()
 
 
     elif args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
         print("Load pre-trained checkpoint from: %s" % args.finetune)
+        checkpoint_model = checkpoint.get('model', checkpoint)
+        _load_pretrained_with_smart_prefix(model, checkpoint_model, args)
 
-        # 兼容性地获取模型权重
-        if 'model' in checkpoint:
-            checkpoint_model = checkpoint['model']
-        elif 'state_dict' in checkpoint:
-            checkpoint_model = checkpoint['state_dict']
-        else:
-            # 如果是直接保存的 state_dict（没有嵌套）
-            checkpoint_model = checkpoint
+        head_module = getattr(model, 'head', None)
+        if head_module is not None and hasattr(head_module, 'weight'):
+            trunc_normal_(head_module.weight, std=2e-5)
+            if head_module.bias is not None:
+                nn.init.constant_(head_module.bias, 0.0)
 
-        # 如果是直接保存的完整模型，提取 state_dict
-        if isinstance(checkpoint_model, dict) and hasattr(checkpoint_model, 'state_dict'):
-            checkpoint_model = checkpoint_model.state_dict()
-
-        # 若权重以半精度存储，统一转换成 float32
-        for k, v in checkpoint_model.items():
-            if isinstance(v, torch.Tensor):
-                checkpoint_model[k] = v.float()
-
-        # —— 兼容 RCOT: 移除 checkpoint_model 中所有 'base.' 前缀 ——
-        if any(k.startswith('base.') for k in checkpoint_model.keys()):
-            new_ckpt = {}
-            for k, v in checkpoint_model.items():
-                if k.startswith('base.'):
-                    new_key = k[len('base.'):]
-                else:
-                    new_key = k
-                new_ckpt[new_key] = v
-            checkpoint_model = new_ckpt
-
-        state_dict = model.state_dict()
-
-
-        # 移除 head 层不匹配的参数
-        for k in ['head.weight', 'head.bias']:
-            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                print(f"Removing key {k} from pretrained checkpoint")
-                del checkpoint_model[k]
-
-        # 加载模型权重
-        model.load_state_dict(checkpoint_model, strict=False)
-
-        # interpolate position embedding
-        interpolate_pos_embed(model, checkpoint_model)
-
-        # load pre-trained model
-        msg = model.load_state_dict(checkpoint_model, strict=False)
-        print(msg)
-
-        # 强制将模型权重转换为 float32，防止残留的半精度参数导致 dtype 不匹配
-        for name, param in model.named_parameters():
-            if isinstance(param, torch.nn.Parameter) and param.dtype != torch.float32:
-                param.data = param.data.float()
-
-        # 放宽断言条件
-        allowed_missing = {'head.weight', 'head.bias'}
-        if args.global_pool:
-            allowed_missing.update({'fc_norm.weight', 'fc_norm.bias'})
-
-        unexpected_missing = set(msg.missing_keys) - allowed_missing
-
-        if unexpected_missing:
-            print("⚠️ Unexpected missing keys (not allowed):")
-            for k in unexpected_missing:
-                print(f"  {k}")
-            # 可选：raise ValueError 或者继续运行
-        else:
-            print("✅ All missing keys are expected.")
-
-        # manually initialize fc layer
-        trunc_normal_(model.head.weight, std=2e-5)
-    # 确保模型参数为 float32（避免权重/偏置为 float16 导致与输入 dtype 不匹配）
     model = model.float().to(device)
 
     model_without_ddp = model
@@ -445,7 +459,7 @@ def main(args):
     print("criterion = %s" % str(criterion))
 
     misc.load_model(args=args, model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
-    # ——— 方案 A：finetune 时在加载完混合精度 checkpoint 后，重新强制 cast 整个模型为 float32 ———
+    # 鈥斺€斺€?鏂规 A锛歠inetune 鏃跺湪鍔犺浇瀹屾贩鍚堢簿搴?checkpoint 鍚庯紝閲嶆柊寮哄埗 cast 鏁翠釜妯″瀷涓?float32 鈥斺€斺€?
     if args.distributed:
         model.module.float()
     else:
@@ -484,11 +498,6 @@ def main(args):
                 args=args
             )
 
-        if args.output_dir and (epoch + 1) % 50 == 0:
-             misc.save_model(
-                 args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                 loss_scaler=loss_scaler, epoch=epoch)
-
         test_stats = evaluate(data_loader_val, model, device)
         print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
         max_accuracy = max(max_accuracy, test_stats["acc1"])
@@ -498,10 +507,10 @@ def main(args):
             test_stats_r0 = evaluate_radius_0(data_loader_certify, model, device, args.sigma, stride=25,use_quaternion_noise=args.use_quaternion_noise,levels=args.levels,ratio=args.ratio,)
             print(
                 f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
-            if test_stats_r0['acc1_r0'] > max_r0_accuracy:
-                misc.save_model(
-                    args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
-                    loss_scaler=loss_scaler, epoch=epoch)
+            if args.output_dir and misc.is_main_process() and test_stats_r0['acc1_r0'] > max_r0_accuracy:
+                misc.save_named_model(
+                    args=args, filename='best-r0.pth', epoch=epoch, model=model,
+                    model_without_ddp=model_without_ddp, optimizer=optimizer, loss_scaler=loss_scaler)
             max_r0_accuracy = max(max_r0_accuracy, test_stats_r0['acc1_r0'])
             print(f'Max accuracy on radius 0: {max_r0_accuracy:.2f}%')
             if log_writer is not None:
@@ -518,6 +527,10 @@ def main(args):
                      'n_parameters': n_parameters}
 
         if args.output_dir and misc.is_main_process():
+            misc.save_model(
+                args=args, model=model, model_without_ddp=model_without_ddp, optimizer=optimizer,
+                loss_scaler=loss_scaler, epoch=epoch)
+            misc.cleanup_epoch_checkpoints(args.output_dir, keep_epoch=epoch)
             if log_writer is not None:
                 log_writer.flush()
             with open(os.path.join(args.output_dir, "log.txt"), mode="a", encoding="utf-8") as f:

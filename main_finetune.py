@@ -1,4 +1,4 @@
-import argparse
+﻿import argparse
 import datetime
 import json
 import numpy as np
@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
 
@@ -22,7 +23,6 @@ import util.misc as misc
 from util.datasets import build_dataset, build_dataset_with_interval
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.smooth import _to_bool
 
 import models_vit
 
@@ -99,7 +99,7 @@ def get_args_parser():
                         help='How to apply mixup/cutmix params. Per "batch", "pair", or "elem"')
 
     # * Finetuning params
-    parser.add_argument('--finetune', default=r"D:\pycharm\rcotdmae2\output_dir\checkpoint-41.pth",
+    parser.add_argument('--finetune', default='',
                         help='finetune from checkpoint')
     parser.add_argument('--global_pool', action='store_true')
     parser.set_defaults(global_pool=True)
@@ -107,10 +107,16 @@ def get_args_parser():
                         help='Use class token instead of global pool for classification')
 
     # Dataset parameters
-    parser.add_argument('--data_path', default=r"D:\dataset\tinyimagenet\tiny-imagenet-200", type=str,
+    parser.add_argument('--data_path', default=r"E:\dataset\tinyimagenet\tiny-imagenet-200", type=str,
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
+    parser.add_argument('--class_subset_file', default='', type=str,
+                        help='optional txt file with one wnid per line to restrict ImageNet classes')
+    parser.add_argument('--imagenet_val_ground_truth', default='', type=str,
+                        help='optional path to ILSVRC2012_validation_ground_truth.txt')
+    parser.add_argument('--imagenet_meta', default='', type=str,
+                        help='optional path to meta.mat')
 
     parser.add_argument('--output_dir', default='./output_dir',
                         help='path where to save, empty for no saving')
@@ -145,14 +151,32 @@ def get_args_parser():
     # certified accuracy parameters
     parser.add_argument('--sigma', default=0.5, type=float,
                         help='Std of Gaussian noise')
-    parser.add_argument('--use_quaternion_noise', default=False,
-                        help='Use quaternion wavelet noise instead of pixel Gaussian')
+    parser.add_argument(
+        '--use_quaternion_noise',
+        type=lambda x: str(x).lower() in ('true', '1', 'yes'),
+        default=False,
+        help='Use quaternion wavelet noise instead of pixel Gaussian',
+    )
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
+    parser.add_argument('--r0_batch_size', default=0, type=int,
+                        help='batch size for radius-0 evaluation; <=0 means reuse --batch_size')
+    parser.add_argument('--r0_num_sample', default=100, type=int,
+                        help='number of noisy samples used in radius-0 evaluation')
+    parser.add_argument('--r0_stride', default=50, type=int,
+                        help='micro-batch replication factor used inside radius-0 evaluation')
         
     # consistency regularization parameters
     parser.add_argument('--con_reg', action='store_true', default=False,
@@ -163,6 +187,7 @@ def get_args_parser():
                       help='Weight of K-L divergence')
     parser.add_argument('--reg_eta', default=0.5, type=float,
                       help='Weight of entropy')
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
 
     return parser
 
@@ -234,9 +259,10 @@ def main(args):
         drop_last=False
     )
 
+    r0_batch_size = args.r0_batch_size if args.r0_batch_size > 0 else args.batch_size
     data_loader_certify = torch.utils.data.DataLoader(
         dataset_certify, sampler=sampler_certify,
-        batch_size=args.batch_size,
+        batch_size=r0_batch_size,
         num_workers=args.num_workers,
         pin_memory=args.pin_mem,
         drop_last=False
@@ -251,11 +277,21 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
     
-    model = models_vit.__dict__[args.model](
-        num_classes=args.nb_classes,
-        drop_path_rate=args.drop_path,
-        global_pool=args.global_pool,
-    )
+    # 鏀寔閫氳繃鍙傛暟閫夋嫨RCOT-DMAE鑱斿悎缁撴瀯
+    if args.model == 'rcot_dmae_vit_base_patch16':
+        import models_rcot
+        model = models_rcot.rcot_dmae_vit_base_patch16(use_head=args.use_head, num_classes=args.nb_classes)
+        # 纭繚鎵€鏈夊弬鏁板彲璁粌
+        for param in model.parameters():
+            param.requires_grad = True
+    else:
+        model = models_vit.__dict__[args.model](
+            num_classes=args.nb_classes,
+            drop_path_rate=args.drop_path,
+            global_pool=args.global_pool,
+            use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+            qwt_prior_levels=args.qwt_prior_levels,
+        )
 
     if args.finetune and not args.eval:
         checkpoint = torch.load(args.finetune, map_location='cpu', weights_only=False)
@@ -280,36 +316,43 @@ def main(args):
             if isinstance(v, torch.Tensor):
                 checkpoint_model[k] = v.float()
         state_dict = model.state_dict()
-        for k in ['head.weight', 'head.bias']:
-            if k in checkpoint_model and checkpoint_model[k].shape != state_dict[k].shape:
-                print(f"Removing key {k} from pretrained checkpoint")
-                del checkpoint_model[k]
+        head_keys = [key for key in ('head.weight', 'head.bias') if key in state_dict]
+        for key in head_keys:
+            if key in checkpoint_model and checkpoint_model[key].shape != state_dict[key].shape:
+                print(f"Removing key {key} from pretrained checkpoint")
+                del checkpoint_model[key]
 
-            # —— 1. 去除 checkpoint_model 中所有 'base.' 前缀 ——
-            new_ckpt = {}
+        new_ckpt = {}
+        for key, value in checkpoint_model.items():
+            if key.startswith('base.'):
+                new_key = key[len('base.'): ]
+            else:
+                new_key = key
+            new_ckpt[new_key] = value
+        checkpoint_model = new_ckpt
 
-            for k, v in checkpoint_model.items():
+        # 涓嬮潰鍐嶅仛浣嶇疆宓屽叆鎻掞拷?
+        interpolate_pos_embed(model, checkpoint_model)
 
-                if k.startswith('base.'):
-                    # 把 "base.blocks.0...." → "blocks.0...."
-                    new_key = k[len('base.'):]
-                else:
-                    new_key = k
-                new_ckpt[new_key] = v
-            checkpoint_model = new_ckpt
 
-            # 下面再做位置嵌入插值
-            interpolate_pos_embed(model, checkpoint_model)
 
         # load pre-trained model
         msg = model.load_state_dict(checkpoint_model, strict=False)
         print(msg)
 
-  # 检查 missing_keys：只要它们是允许缺失的那些 key 的子集就行
-        expected = {'head.weight', 'head.bias'}
+  # 妫€鏌?missing_keys锛氬彧瑕佸畠浠槸鍏佽缂哄け鐨勯偅浜?key 鐨勫瓙闆嗗氨琛?
+        expected = set(head_keys)
+        if args.use_qwt_prior_adapter:
+            expected |= {
+                'prior_gate',
+                'prior_ln.weight',
+                'prior_ln.bias',
+                'prior_proj.weight',
+                'prior_proj.bias',
+            }
 
         if args.global_pool:
-  # global_pool 时多两个 layernorm 参数
+  # global_pool 鏃跺涓や釜 layernorm 鍙傛暟
             expected |= {'fc_norm.weight', 'fc_norm.bias'}
         missing = set(msg.missing_keys)
         unexpected = missing - expected
@@ -319,8 +362,12 @@ def main(args):
             raise RuntimeError(f"Unexpected missing keys when loading checkpoint: {unexpected}")
         print(f"=> loaded successfully, missing keys: {msg.missing_keys}")
 
-        # manually initialize fc layer
-        trunc_normal_(model.head.weight, std=2e-5)
+        # manually initialize classification head
+        head_module = getattr(model, 'head', None)
+        if head_module is not None and hasattr(head_module, 'weight'):
+            trunc_normal_(head_module.weight, std=2e-5)
+            if head_module.bias is not None:
+                nn.init.constant_(head_module.bias, 0.0)
 
     model.to(device)
 
@@ -376,6 +423,8 @@ def main(args):
             model,
             device,
             args.sigma,
+            num_sample=args.r0_num_sample,
+            stride=args.r0_stride,
             use_quaternion_noise=args.use_quaternion_noise,
             levels=args.levels,
             ratio=args.ratio,
@@ -386,7 +435,7 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
-    max_r0_accuracy = 0.0
+    max_r0_accuracy = float('-inf')
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
@@ -424,16 +473,30 @@ def main(args):
                 model,
                 device,
                 args.sigma,
-                stride=25,
+                num_sample=args.r0_num_sample,
+                stride=args.r0_stride,
                 use_quaternion_noise=args.use_quaternion_noise,
                 levels=args.levels,
                 ratio=args.ratio,
             )
             print(f"Accuracy on radius 0 of the network on the {len(dataset_val)} test images: {test_stats_r0['acc1_r0']:.1f}%")
-            max_r0_accuracy = max(max_r0_accuracy, test_stats_r0['acc1_r0'])
+            if test_stats_r0['acc1_r0'] > max_r0_accuracy:
+                max_r0_accuracy = test_stats_r0['acc1_r0']
+                if args.output_dir:
+                    misc.save_named_model(
+                        args=args,
+                        filename='best-r0.pth',
+                        epoch=epoch,
+                        model=model,
+                        model_without_ddp=model_without_ddp,
+                        optimizer=optimizer,
+                        loss_scaler=loss_scaler,
+                    )
             print(f'Max accuracy on radius 0: {max_r0_accuracy:.2f}%')
             if log_writer is not None:
                 log_writer.add_scalar('perf/acc1_r0', test_stats_r0['acc1_r0'], epoch)
+        else:
+            test_stats_r0 = {}
 
         if log_writer is not None:
             log_writer.add_scalar('perf/test_acc1', test_stats['acc1'], epoch)
@@ -442,6 +505,7 @@ def main(args):
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                         **{f'test_{k}': v for k, v in test_stats.items()},
+                        **{f'test_{k}': v for k, v in test_stats_r0.items()},
                         'epoch': epoch,
                         'n_parameters': n_parameters}
 

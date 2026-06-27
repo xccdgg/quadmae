@@ -16,7 +16,7 @@ from engine_finetune import certify_evaluate_dist
 
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('Test of certified accuracy', add_help=False)
+    parser = argparse.ArgumentParser('RCOT certification', add_help=False)
     parser.add_argument('--batch_size', default=1, type=int,
                         help='Batch size per GPU (effective batch size is batch_size * accum_iter * # gpus')
 
@@ -43,6 +43,12 @@ def get_args_parser():
                         help='dataset path')
     parser.add_argument('--nb_classes', default=1000, type=int,
                         help='number of the classification types')
+    parser.add_argument('--class_subset_file', default='', type=str,
+                        help='optional txt file with one wnid per line to restrict ImageNet classes')
+    parser.add_argument('--imagenet_val_ground_truth', default='', type=str,
+                        help='optional path to ILSVRC2012_validation_ground_truth.txt')
+    parser.add_argument('--imagenet_meta', default='', type=str,
+                        help='optional path to meta.mat')
 
     parser.add_argument('--output_dir', default=None,
                         help='path where to save, empty for no saving')
@@ -77,21 +83,32 @@ def get_args_parser():
                         help='standard deviation for randomized smoothing')
     parser.add_argument('--sample_interval', default=50, type=int,
                         help="the interval of sampling during test")
+    parser.add_argument('--cert_batch_size', default=1000, type=int,
+                        help='internal sampling batch size used inside randomized smoothing certify()')
     parser.add_argument(
         '--use_quaternion_noise',
         type=lambda x: str(x).lower() in ('true', '1', 'yes'),
-        default=True,
+        default=False,
         help='Use quaternion wavelet noise instead of pixel Gaussian'
     )
     parser.add_argument('--levels', default=1, type=int,
                         help='Levels of QWT decomposition for noise')
     parser.add_argument('--ratio', default=3.0, type=float,
                         help='Sigma_H / Sigma_L ratio for QWT noise')
+    parser.add_argument('--use_qwt_prior_adapter', action='store_true',
+                        help='Enable deterministic QWT prior adapter')
+    parser.add_argument('--qwt_prior_levels', default=1, type=int,
+                        help='Levels for deterministic QWT prior extractor (v1 only supports 1)')
+    parser.add_argument('--subband_loss_weight', default=0.1, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
+    parser.add_argument('--subband_loss_detail_weight', default=0.5, type=float,
+                        help='Reserved for interface parity; only used during pretraining')
 
     parser.add_argument('--use_rcot', action='store_true',
                         help='Apply RCOT restoration before certification')
     parser.add_argument('--rcot_ckpt', default='', type=str,
                         help='path to RCOT checkpoint')
+    parser.add_argument('--use_head', action='store_true', help='Enable classification head for RCOT-DMAE model')
 
     return parser
 
@@ -149,6 +166,8 @@ def main(args):
         num_classes=args.nb_classes,
         drop_path_rate=args.drop_path,
         global_pool=args.global_pool,
+        use_qwt_prior_adapter=args.use_qwt_prior_adapter,
+        qwt_prior_levels=args.qwt_prior_levels,
     )
     if args.linprobe:
         # for linear prob only
@@ -172,7 +191,7 @@ def main(args):
     restorer = None
     if args.use_rcot:
         import models_rcot
-        restorer = models_rcot.rcot_dmae_vit_base_patch16()
+        restorer = models_rcot.rcot_dmae_vit_base_patch16(use_head=args.use_head, num_classes=args.nb_classes)
         if args.rcot_ckpt:
             ckpt = torch.load(args.rcot_ckpt, map_location="cpu")
             restorer.load_state_dict(ckpt.get("model", ckpt), strict=False)
@@ -185,7 +204,7 @@ def main(args):
     if args.sigma:
         smoothed_classifier = Smooth(
             model,
-            num_classes,
+            args.nb_classes,
             args.sigma,
             use_quaternion_noise=args.use_quaternion_noise,
             levels=args.levels,
@@ -196,6 +215,7 @@ def main(args):
             smoothed_classifier,
             device,
             threshold,
+            cert_batch_size=args.cert_batch_size,
             restorer=restorer,
             use_rcot=args.use_rcot,
         )
@@ -211,7 +231,7 @@ def main(args):
         for sigma in [0.25, 0.5, 1.0]:
             smoothed_classifier = Smooth(
                 model,
-                num_classes,
+                args.nb_classes,
                 sigma,
                 use_quaternion_noise=args.use_quaternion_noise,
                 levels=args.levels,
@@ -222,6 +242,7 @@ def main(args):
                 smoothed_classifier,
                 device,
                 threshold,
+                cert_batch_size=args.cert_batch_size,
                 restorer=restorer,
                 use_rcot=args.use_rcot,
             )
@@ -241,6 +262,4 @@ if __name__ == '__main__':
     args = args.parse_args()
     # if args.output_dir:
     #    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    
-    num_classes = 1000
     main(args)
