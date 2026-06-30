@@ -90,6 +90,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         torch.cuda.synchronize()
 
         metric_logger.update(loss=loss_value)
+        if noised.last_sigma_pix is not None:
+            metric_logger.update(noise_sigma=noised.last_sigma_pix)
         min_lr = 10.
         max_lr = 0.
         for group in optimizer.param_groups:
@@ -196,6 +198,8 @@ def train_one_epoch_con_reg(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(loss=loss_value)
         metric_logger.update(loss_nat=loss_nat)
         metric_logger.update(loss_reg=loss_reg)
+        if noised.last_sigma_pix is not None:
+            metric_logger.update(noise_sigma=noised.last_sigma_pix)
 
         min_lr = 10.
         max_lr = 0.

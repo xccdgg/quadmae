@@ -9,6 +9,7 @@ import csv
 
 import util.misc as misc
 from util.smooth import Smooth
+from util.noise import fixed_sigma_value
 
 import models_vit
 import models_rcot
@@ -71,8 +72,8 @@ def get_args_parser():
                         help='url used to set up distributed training')
     
     # certified parameters
-    parser.add_argument('--sigma', default=0.25, type=float,
-                        help='standard deviation for randomized smoothing')
+    parser.add_argument('--sigma', default=0.25,
+                        help='fixed standard deviation for randomized smoothing')
     parser.add_argument('--sample_interval', default=1, type=int,
                         help="the interval of sampling during test")
     parser.add_argument('--num', default=1000, type=int,
@@ -119,6 +120,14 @@ class DatasetWithInterval(torch.utils.data.Dataset):
         return len(self.dataset) // self.interval
 
 def main(args):
+    try:
+        args.sigma = fixed_sigma_value(args.sigma)
+    except ValueError as exc:
+        raise ValueError(
+            "CIFAR-10 certification requires a fixed evaluate sigma. "
+            "Use --sigma 0.25 or --sigma 0.5; do not use --sigma \"[0,0.75]\" here."
+        ) from exc
+
     misc.init_distributed_mode(args)
 
     print('job dir: {}'.format(os.path.dirname(os.path.realpath(__file__))))

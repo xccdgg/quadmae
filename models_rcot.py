@@ -1,166 +1,313 @@
-"""RCOT two-stage image restoration modules built on DMAE."""
+"""RCOT two-stage image restoration modules built on DMAE with a Restormer-style
+residual refinement branch."""
+
+from __future__ import annotations
+
+import math
+from functools import partial
+from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-from functools import partial
+import torch.nn.functional as F
 import torchvision.transforms as transforms
 import PIL
-from typing import Optional, Tuple, Union
 
 from util.quadatasetgpu import QuaternionWaveletNoise
 from util.smooth import _sigma_total_from_pixel
-
+from util.noise import sample_sigma
 
 from models_dmae import DenoisingMaskedAutoencoderViT
 
 
-class ResidualEncoder(nn.Module):
-    """Encode residual image to an embedding vector."""
+# -----------------------------------------------------------------------------#
+# Helper blocks copied / simplified from RCOT-main
+# -----------------------------------------------------------------------------#
 
-    def __init__(self, in_channels: int = 3, embed_dim: int = 768):
+def conv(in_channels: int, out_channels: int, kernel_size: int, bias: bool = True) -> nn.Conv2d:
+    return nn.Conv2d(
+        in_channels,
+        out_channels,
+        kernel_size,
+        padding=kernel_size // 2,
+        bias=bias,
+    )
+
+
+class CALayer(nn.Module):
+    """Channel attention layer as used in RCAN / RCOT."""
+
+    def __init__(self, channel: int, reduction: int = 16, bias: bool = True) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, 32, kernel_size=3, stride=2, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.conv3 = nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(128, embed_dim)
-        self.act = nn.GELU()
-
-    def forward(self, r: torch.Tensor) -> torch.Tensor:
-        x = torch.relu(self.bn1(self.conv1(r)))
-        x = torch.relu(self.bn2(self.conv2(x)))
-        x = torch.relu(self.bn3(self.conv3(x)))
-        x = self.pool(x).view(x.size(0), -1)
-        e = self.act(self.fc(x))
-        return e
-
-
-class FiLMBlock(nn.Module):
-    """Feature-wise Linear Modulation block."""
-
-    def __init__(self, cond_dim: int, feat_dim: int):
-        super().__init__()
-        self.gamma_fc = nn.Linear(cond_dim, feat_dim)
-        self.beta_fc = nn.Linear(cond_dim, feat_dim)
-
-    def forward(self, cond: torch.Tensor, features: torch.Tensor) -> torch.Tensor:
-        gamma = self.gamma_fc(cond)
-        beta = self.beta_fc(cond)
-        if features.dim() == 3:
-            gamma = gamma.unsqueeze(1)
-            beta = beta.unsqueeze(1)
-        return features * gamma + beta
-
-
-class ConditionalTransformerBlock(nn.Module):
-    """Transformer block with FiLM conditioning."""
-
-    def __init__(self, embed_dim: int, num_heads: int, mlp_ratio: float = 4.0, cond_dim: Optional[int] = None):
-        super().__init__()
-        self.norm1 = nn.LayerNorm(embed_dim)
-        self.attn = nn.MultiheadAttention(embed_dim, num_heads, batch_first=True)
-        self.norm2 = nn.LayerNorm(embed_dim)
-        hidden = int(embed_dim * mlp_ratio)
-        self.ffn = nn.Sequential(
-            nn.Linear(embed_dim, hidden),
-            nn.GELU(),
-            nn.Linear(hidden, embed_dim),
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv_du = nn.Sequential(
+            nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=bias),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=bias),
+            nn.Sigmoid(),
         )
-        self.film = FiLMBlock(cond_dim or embed_dim, embed_dim)
 
-    def forward(self, x: torch.Tensor, cond: Optional[torch.Tensor] = None) -> torch.Tensor:
-        attn_out, _ = self.attn(self.norm1(x), self.norm1(x), self.norm1(x))
-        x = x + attn_out
-        ffn_out = self.ffn(self.norm2(x))
-        x = x + ffn_out
-        if cond is not None:
-            x = self.film(cond, x)  # 修正调用方式，FiLMBlock 继承 nn.Module，可直接调用
-        return x
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.avg_pool(x)
+        y = self.conv_du(y)
+        return x * y
 
 
-class ConditionalDecoder(nn.Module):
-    """Transformer decoder with FiLM conditioning producing images."""
+class CAB(nn.Module):
+    """Channel attention block."""
 
-    def __init__(self, embed_dim: int = 512, num_layers: int = 8, num_heads: int = 8,
-                 mlp_ratio: float = 4.0, cond_dim: Optional[int] = None,
-                 patch_size: int = 16, image_size: Union[int, Tuple[int, int]] = 224):
+    def __init__(self, n_feat: int, kernel_size: int = 3, reduction: int = 16, bias: bool = True) -> None:
         super().__init__()
+        self.body = nn.Sequential(
+            conv(n_feat, n_feat, kernel_size, bias=bias),
+            nn.PReLU(),
+            conv(n_feat, n_feat, kernel_size, bias=bias),
+        )
+        self.ca = CALayer(n_feat, reduction, bias=bias)
 
-        if isinstance(image_size, (tuple, list)):
-            h, w = image_size
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        res = self.body(x)
+        res = self.ca(res)
+        return res + x
+
+
+class SAM(nn.Module):
+    """Spatial attention module used to generate the stage image."""
+
+    def __init__(self, n_feat: int, kernel_size: int = 3, bias: bool = True) -> None:
+        super().__init__()
+        self.conv1 = conv(n_feat, n_feat, kernel_size, bias=bias)
+        self.conv2 = conv(n_feat, 3, kernel_size, bias=bias)
+        self.conv3 = conv(3, n_feat, kernel_size, bias=bias)
+
+    def forward(self, x: torch.Tensor, x_img: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        x1 = self.conv1(x)
+        img = self.conv2(x) + x_img
+        attn = torch.sigmoid(self.conv3(img))
+        x1 = x1 * attn
+        x1 = x1 + x
+        return x1, img
+
+
+class UpSample(nn.Module):
+    """Upsample by a factor of 2 using PixelShuffle."""
+
+    def __init__(self, n_feat: int) -> None:
+        super().__init__()
+        self.body = nn.Sequential(
+            nn.Conv2d(n_feat, n_feat * 4, kernel_size=3, stride=1, padding=1, bias=True),
+            nn.PixelShuffle(2),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.body(x)
+
+
+# -----------------------------------------------------------------------------#
+# Feature pyramids
+# -----------------------------------------------------------------------------#
+
+class TokenPyramid(nn.Module):
+    """Project ViT patch tokens into a 3-scale convolutional pyramid."""
+
+    def __init__(self, in_dim: int, base_dim: int = 64) -> None:
+        super().__init__()
+        self.base_dim = base_dim
+
+        self.level1 = nn.Sequential(
+            nn.Conv2d(in_dim, base_dim * 16, kernel_size=1),
+            nn.PixelShuffle(4),
+            CAB(base_dim),
+        )
+        self.level2 = nn.Sequential(
+            nn.Conv2d(in_dim, base_dim * 4, kernel_size=1),
+            nn.PixelShuffle(2),
+            CAB(base_dim),
+        )
+        self.level3 = nn.Sequential(
+            nn.Conv2d(in_dim, base_dim, kernel_size=1),
+            CAB(base_dim),
+        )
+
+    def forward(self, tokens: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """tokens: (B, N, C) without CLS token."""
+        b, n, c = tokens.shape
+        side = int(math.sqrt(n))
+        feat = tokens.transpose(1, 2).reshape(b, c, side, side)
+        level1 = self.level1(feat)
+        level2 = self.level2(feat)
+        level3 = self.level3(feat)
+        return level1, level2, level3
+
+
+class ResidualPyramidEncoder(nn.Module):
+    """Encode residual images into a multi-scale pyramid aligned with the token pyramid."""
+
+    def __init__(self, in_channels: int = 3, base_dim: int = 64) -> None:
+        super().__init__()
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_channels, base_dim, kernel_size=3, stride=2, padding=1),
+            nn.PReLU(),
+            nn.Conv2d(base_dim, base_dim, kernel_size=3, stride=2, padding=1),
+            nn.PReLU(),
+        )
+        self.level1 = nn.Sequential(CAB(base_dim), CAB(base_dim))
+        self.down1 = nn.Conv2d(base_dim, base_dim, kernel_size=3, stride=2, padding=1)
+        self.level2 = nn.Sequential(CAB(base_dim), CAB(base_dim))
+        self.down2 = nn.Conv2d(base_dim, base_dim, kernel_size=3, stride=2, padding=1)
+        self.level3 = nn.Sequential(CAB(base_dim), CAB(base_dim))
+
+    def forward(self, residual: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        x = self.stem(residual)
+        level1 = self.level1(x)            # 56×56
+        x = self.down1(level1)
+        level2 = self.level2(x)            # 28×28
+        x = self.down2(level2)
+        level3 = self.level3(x)            # 14×14
+        return level1, level2, level3
+
+
+class RCOTDecoder(nn.Module):
+    """Restormer-style decoder with SAM refinement."""
+
+    def __init__(self, base_dim: int = 64) -> None:
+        super().__init__()
+        self.latent = nn.Sequential(CAB(base_dim), CAB(base_dim))
+        self.up_level3 = UpSample(base_dim)
+        self.reduce_level2 = nn.Sequential(
+            conv(base_dim * 2, base_dim, kernel_size=3, bias=True),
+            CAB(base_dim),
+        )
+        self.up_level2 = UpSample(base_dim)
+        self.reduce_level1 = nn.Sequential(
+            conv(base_dim * 2, base_dim, kernel_size=3, bias=True),
+            CAB(base_dim),
+            CAB(base_dim),
+        )
+        self.refine = nn.Sequential(CAB(base_dim), CAB(base_dim))
+        self.sam = SAM(base_dim, kernel_size=1, bias=True)
+
+    def forward(
+        self,
+        fused_levels: Sequence[torch.Tensor],
+        base_image: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        level1, level2, level3 = fused_levels
+        x = self.latent(level3)
+        x = self.up_level3(x)
+        x = torch.cat([x, level2], dim=1)
+        x = self.reduce_level2(x)
+        x = self.up_level2(x)
+        x = torch.cat([x, level1], dim=1)
+        x = self.reduce_level1(x)
+        x = self.refine(x)
+        if x.shape[-2:] != base_image.shape[-2:]:
+            base_resized = F.interpolate(base_image, size=x.shape[-2:], mode="bilinear", align_corners=False)
         else:
-            h = w = image_size
-        num_patches = (h // patch_size) * (w // patch_size)
+            base_resized = base_image
 
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, embed_dim))
-        self.blocks = nn.ModuleList([
-            ConditionalTransformerBlock(embed_dim, num_heads, mlp_ratio, cond_dim)
-            for _ in range(num_layers)
-        ])
-        self.norm = nn.LayerNorm(embed_dim)
-        self.out_proj = nn.Linear(embed_dim, patch_size * patch_size * 3)
-        self.patch_size = patch_size
+        feat, refined = self.sam(x, base_resized)
 
-    def forward(self, tokens: torch.Tensor, cond: torch.Tensor) -> torch.Tensor:
-        """Decode token features into an image conditioned on ``cond``."""
+        if refined.shape[-2:] != base_image.shape[-2:]:
+            refined = F.interpolate(refined, size=base_image.shape[-2:], mode="bilinear", align_corners=False)
 
-        x = tokens + self.pos_embed[:, : tokens.size(1), :]
-        for blk in self.blocks:
-            x = blk(x, cond)
-        x = self.norm(x)
-        patch_pixels = self.out_proj(x)
-        b, n, _ = patch_pixels.shape
-        side = int(n ** 0.5)
-        patches = patch_pixels.view(b, side, side, self.patch_size, self.patch_size, 3)
-        patches = patches.permute(0, 5, 1, 3, 2, 4).contiguous()
-        return patches.view(b, 3, side * self.patch_size, side * self.patch_size)
+        return refined, feat
 
+
+class ClassificationHead(nn.Module):
+    """Fuse ViT CLS token with multi-scale features for classification."""
+
+    def __init__(
+        self,
+        cls_dim: int,
+        feat_dim: int,
+        num_levels: int,
+        num_classes: int,
+        hidden_dim: int = 1024,
+        dropout: float = 0.1,
+    ) -> None:
+        super().__init__()
+        self.norm = nn.LayerNorm(cls_dim + feat_dim * num_levels)
+        self.mlp = nn.Sequential(
+            nn.Linear(cls_dim + feat_dim * num_levels, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, num_classes),
+        )
+
+    def forward(self, cls_token: torch.Tensor, fused_levels: Sequence[torch.Tensor]) -> torch.Tensor:
+        pooled_feats = [feat.mean(dim=[2, 3]) for feat in fused_levels]
+        concat = torch.cat([cls_token] + pooled_feats, dim=1)
+        logits = self.mlp(self.norm(concat))
+        return logits
+
+
+# -----------------------------------------------------------------------------#
+# Two-stage DMAE with RCOT-style refinement
+# -----------------------------------------------------------------------------#
 
 class TwoStageDMAE(nn.Module):
-    """Two-stage DMAE with residual conditioning."""
+    """DMAE backbone + RCOT residual refinement + optional classifier."""
 
-    def __init__(self, base_model: DenoisingMaskedAutoencoderViT,
-                 decoder2: ConditionalDecoder, res_encoder: ResidualEncoder,
-                 *,
-                 freeze_base: bool = True,
-                 use_quaternion_noise: bool = False,
-                 levels: int = 1,
-                 ratio: float = 3.0):
+    def __init__(
+        self,
+        base_model: DenoisingMaskedAutoencoderViT,
+        *,
+        freeze_base: bool = True,
+        use_quaternion_noise: bool = False,
+        levels: int = 1,
+        ratio: float = 3.0,
+        num_classes: int = 10,
+        use_head: bool = False,
+        base_dim: int = 64,
+        head_hidden_dim: int = 1024,
+    ) -> None:
         super().__init__()
         self.base = base_model
-        self.decoder2 = decoder2
-        self.res_encoder = res_encoder
         self.use_quaternion_noise = bool(use_quaternion_noise)
         self.levels = int(levels)
         self.ratio = float(ratio)
+        self.use_head = use_head
+        self.base_dim = base_dim
+
+        embed_dim = base_model.patch_embed.proj.out_channels
+        self.token_pyramid = TokenPyramid(embed_dim, base_dim)
+        self.residual_encoder = ResidualPyramidEncoder(in_channels=3, base_dim=base_dim)
+        self.fusion_alpha = nn.Parameter(torch.tensor([0.8, 0.8, 0.8], dtype=torch.float32))
+        self.decoder = RCOTDecoder(base_dim)
+
+        if use_head:
+            self.classifier = ClassificationHead(
+                cls_dim=embed_dim,
+                feat_dim=base_dim,
+                num_levels=3,
+                num_classes=num_classes,
+                hidden_dim=head_hidden_dim,
+            )
+            if isinstance(self.classifier.mlp, nn.Sequential):
+                for idx in range(len(self.classifier.mlp) - 1, -1, -1):
+                    if isinstance(self.classifier.mlp[idx], nn.Linear):
+                        self._modules['head'] = self.classifier.mlp[idx]
+                        break
+        else:
+            self.classifier = None
 
         if freeze_base:
-            # Freeze parameters of the base encoder and first decoder
             for p in self.base.parameters():
                 p.requires_grad_(False)
-
-            # Put BatchNorm/Dropout layers in evaluation mode so that running stats stay frozen
             for m in self.base.modules():
                 if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.Dropout)):
                     m.eval()
         else:
-            # Ensure all base parameters are trainable
             for p in self.base.parameters():
                 p.requires_grad_(True)
 
         print(
             f"[Model] freeze_base={freeze_base}, "
-            f"trainable_params_base={sum(p.requires_grad for p in self.base.parameters())}"
+            f"trainable_base_params={sum(p.requires_grad for p in self.base.parameters())}"
         )
 
-        # Initialize conditional decoder positional embedding from the base decoder
-        if self.decoder2.pos_embed.shape == (1, self.base.decoder_pos_embed.shape[1] - 1, self.base.decoder_pos_embed.shape[2]):
-            with torch.no_grad():
-                self.decoder2.pos_embed.copy_(self.base.decoder_pos_embed[:, 1:, :])
-
+    # ------------------------------------------------------------------#
     def _decoder_tokens(self, latent: torch.Tensor, ids_restore: torch.Tensor) -> torch.Tensor:
         """Return decoder token features of the first stage before prediction."""
         x = self.base.decoder_embed(latent)
@@ -174,65 +321,104 @@ class TwoStageDMAE(nn.Module):
         x = self.base.decoder_norm(x)
         return x
 
-    # ------------------------------------------------------------------
+    # ------------------------------------------------------------------#
+    def _apply_noise(self, imgs_norm: torch.Tensor) -> torch.Tensor:
+        sigma_pix = sample_sigma(self.base.sigma, imgs_norm.device)
+        self.last_noise_sigma = sigma_pix
+        if not self.use_quaternion_noise:
+            noise_norm = torch.randn_like(imgs_norm) * (sigma_pix / self.base.std)
+            return imgs_norm + noise_norm
+        sigma_pix_norm = (torch.tensor(sigma_pix, device=imgs_norm.device) / self.base.std.mean()).item()
+        sigma_total = _sigma_total_from_pixel(sigma_pix_norm, self.ratio)
+        return QuaternionWaveletNoise.apply_noise(
+            imgs_norm,
+            sigma=sigma_total,
+            filter_name="haar",
+            levels=self.levels,
+            ratio=self.ratio,
+            device=imgs_norm.device,
+        )
+
+    # ------------------------------------------------------------------#
     def forward(
         self,
         imgs: torch.Tensor,
         mask_ratio: float = 0.75,
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Return intermediate tensors and stage losses for RCOT pretraining."""
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Return normalized stage-1/2 outputs, residual, losses, and optional logits."""
 
-        imgs = transforms.Resize((224, 224), interpolation=PIL.Image.BICUBIC)(imgs)
+        target_size = self.base.patch_embed.img_size
+        if isinstance(target_size, int):
+            target_size = (target_size, target_size)
+        elif isinstance(target_size, tuple):
+            if len(target_size) == 1:
+                target_size = (target_size[0], target_size[0])
+        else:
+            raise TypeError(f"Unsupported img_size type: {type(target_size)}")
+
+        imgs = transforms.Resize(
+            target_size,
+            interpolation=PIL.Image.BICUBIC,
+        )(imgs)
 
         if self.base.mean.device != imgs.device:
             self.base.mean = self.base.mean.to(imgs.device)
             self.base.std = self.base.std.to(imgs.device)
 
         imgs_norm = (imgs - self.base.mean) / self.base.std
-
-        if self.use_quaternion_noise:
-            sigma_pix_norm = (self.base.sigma / self.base.std.mean()).item()
-            sigma_total = _sigma_total_from_pixel(sigma_pix_norm, self.ratio)
-            imgs_noised_norm = QuaternionWaveletNoise.apply_noise(
-                imgs_norm,
-                sigma=sigma_total,
-                filter_name="haar",
-                levels=self.levels,
-                ratio=self.ratio,
-                device=imgs_norm.device,
-            )
-        else:
-            noise_norm = torch.randn_like(imgs_norm) * (self.base.sigma / self.base.std)
-            imgs_noised_norm = imgs_norm + noise_norm
+        imgs_noised_norm = self._apply_noise(imgs_norm)
 
         latent, mask, ids_restore = self.base.forward_encoder(imgs_noised_norm, mask_ratio)
-        features = self._decoder_tokens(latent, ids_restore)
-        pred_tokens = self.base.decoder_pred(features)
-        pred_tokens = pred_tokens[:, 1:, :]
+        cls_token = latent[:, 0, :]
+        patch_tokens = latent[:, 1:, :]
+
+        decoder_tokens = self._decoder_tokens(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(decoder_tokens)[:, 1:, :]
         loss1 = self.base.forward_loss(imgs_norm, pred_tokens, mask)
+        x_stage1_norm = self.base.unpatchify(pred_tokens)
+        residual_norm = imgs_noised_norm - x_stage1_norm
 
-        x_hat = self.base.unpatchify(pred_tokens)
-        r = imgs_noised_norm - x_hat  # 修改为输入图片 - 恢复结果
-        cond = self.res_encoder(r)  # ResidualEncoder 继承 nn.Module，可直接调用
-        tokens2 = features[:, 1:, :]
-        x_refined = self.decoder2(tokens2, cond)  # ConditionalDecoder 继承 nn.Module，可直接调用
-        loss2 = ((x_refined - imgs_norm) ** 2).mean()
-        return x_hat, r, x_refined, loss1, loss2
+        trunk_feats = self.token_pyramid(patch_tokens)
+        res_feats = self.residual_encoder(residual_norm)
 
-    # ------------------------------------------------------------------
+        fused_levels: List[torch.Tensor] = []
+        for idx, (t_feat, r_feat) in enumerate(zip(trunk_feats, res_feats)):
+            if r_feat.shape[-2:] != t_feat.shape[-2:]:
+                r_feat = F.interpolate(r_feat, size=t_feat.shape[-2:], mode="bilinear", align_corners=False)
+            alpha = torch.clamp(self.fusion_alpha[idx], 0.0, 1.5)
+            fused_levels.append(t_feat + alpha * r_feat)
+
+        x_stage2_norm, _ = self.decoder(fused_levels, x_stage1_norm)
+        loss2 = self.base.forward_loss(imgs_norm, self.base.patchify(x_stage2_norm), mask)
+
+        cls_logits: Optional[torch.Tensor] = None
+        if self.classifier is not None:
+            cls_logits = self.classifier(cls_token, fused_levels)
+
+        return x_stage1_norm, residual_norm, x_stage2_norm, loss1, loss2, cls_logits
+
+    # ------------------------------------------------------------------#
     @torch.no_grad()
     def restore(
         self,
         x_noisy: torch.Tensor,
         *,
         use_rcot: bool = True,
-        x_clean: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Restore noisy input.  Returns pixel-domain images."""
 
-        if x_noisy.shape[-1] != self.base.patch_embed.img_size:
+        target_size = self.base.patch_embed.img_size
+        if isinstance(target_size, int):
+            target_size = (target_size, target_size)
+        elif isinstance(target_size, tuple):
+            if len(target_size) == 1:
+                target_size = (target_size[0], target_size[0])
+        else:
+            raise TypeError(f"Unsupported img_size type: {type(target_size)}")
+
+        if x_noisy.shape[-2] != target_size[0] or x_noisy.shape[-1] != target_size[1]:
             x_noisy = transforms.Resize(
-                self.base.patch_embed.img_size,
+                target_size,
                 interpolation=PIL.Image.BICUBIC,
             )(x_noisy)
 
@@ -241,22 +427,54 @@ class TwoStageDMAE(nn.Module):
             self.base.std = self.base.std.to(x_noisy.device)
 
         x_norm = (x_noisy - self.base.mean) / self.base.std
-
         latent, _, ids_restore = self.base.forward_encoder(x_norm, mask_ratio=0.0)
-        features = self._decoder_tokens(latent, ids_restore)
-        pred_tokens = self.base.decoder_pred(features)
-        pred_tokens = pred_tokens[:, 1:, :]
-        x_hat = self.base.unpatchify(pred_tokens)
+        decoder_tokens = self._decoder_tokens(latent, ids_restore)
+        pred_tokens = self.base.decoder_pred(decoder_tokens)[:, 1:, :]
+        x_stage1_norm = self.base.unpatchify(pred_tokens)
 
         if not use_rcot:
-            return (x_hat * self.base.std + self.base.mean).clamp(0.0, 1.0)
+            return (x_stage1_norm * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
-        r = x_norm - x_hat  # 始终用输入图片 - 恢复结果
-        cond = self.res_encoder(r)  # ResidualEncoder 继承 nn.Module，可直接调用
-        tokens2 = features[:, 1:, :]
-        x_refined = self.decoder2(tokens2, cond)  # ConditionalDecoder 继承 nn.Module，可直接调用
-        return (x_refined * self.base.std + self.base.mean).clamp(0.0, 1.0)
+        patch_tokens = latent[:, 1:, :]
+        residual_norm = x_norm - x_stage1_norm
+        trunk_feats = self.token_pyramid(patch_tokens)
+        res_feats = self.residual_encoder(residual_norm)
+        fused_levels = []
+        for alpha, t_feat, r_feat in zip(self.fusion_alpha, trunk_feats, res_feats):
+            if r_feat.shape[-2:] != t_feat.shape[-2:]:
+                r_feat = F.interpolate(r_feat, size=t_feat.shape[-2:], mode="bilinear", align_corners=False)
+            fused_levels.append(t_feat + torch.clamp(alpha, 0.0, 1.5) * r_feat)
+        x_stage2_norm, _ = self.decoder(fused_levels, x_stage1_norm)
+        return (x_stage2_norm * self.base.std + self.base.mean).clamp(0.0, 1.0)
 
+    # ------------------------------------------------------------------#
+    def no_weight_decay(self) -> List[str]:
+        tags = []
+        if hasattr(self.base, "no_weight_decay"):
+            tags.extend(self.base.no_weight_decay())
+        return tags
+
+    # Compatibility shim ------------------------------------------------#
+    @property
+    def blocks(self):
+        return self.base.blocks
+
+    @property
+    def patch_embed(self):
+        return self.base.patch_embed
+
+    @property
+    def norm(self):
+        return self.base.norm
+
+    @property
+    def pos_embed(self):
+        return self.base.pos_embed
+
+
+# -----------------------------------------------------------------------------#
+# Factory
+# -----------------------------------------------------------------------------#
 
 def rcot_dmae_vit_base_patch16(
     *,
@@ -265,8 +483,14 @@ def rcot_dmae_vit_base_patch16(
     use_quaternion_noise: bool = False,
     levels: int = 1,
     ratio: float = 3.0,
+    num_classes: int = 10,
+    use_head: bool = False,
+    head_hidden_dim: int = 1024,
+    base_dim: int = 64,
     **kwargs,
 ) -> TwoStageDMAE:
+    kwargs.pop("num_classes", None)
+    kwargs.pop("use_head", None)
     base = DenoisingMaskedAutoencoderViT(
         patch_size=16,
         embed_dim=768,
@@ -288,29 +512,17 @@ def rcot_dmae_vit_base_patch16(
                 k = k[7:]
             clean_state[k] = v.float() if isinstance(v, torch.Tensor) else v
         missing, unexpected = base.load_state_dict(clean_state, strict=False)
-        print(
-            f"Loaded DMAE weights from {dmae_ckpt} (missing {len(missing)}, unexpected {len(unexpected)})"
-        )
-    cond_decoder = ConditionalDecoder(
-        embed_dim=base.decoder_embed_dim,
-        num_layers=len(base.decoder_blocks),
-        num_heads=base.decoder_blocks[0].attn.num_heads if base.decoder_blocks else 8,
-        mlp_ratio=4.0,
-        cond_dim=base.decoder_embed_dim,
-        patch_size=base.patch_embed.patch_size[0],
-        image_size=base.patch_embed.img_size,
-    )
-    # initialize output projection and normalization from the first stage decoder
-    cond_decoder.norm.load_state_dict(base.decoder_norm.state_dict())
-    cond_decoder.out_proj.weight.data.copy_(base.decoder_pred.weight.data)
-    cond_decoder.out_proj.bias.data.copy_(base.decoder_pred.bias.data)
-    res_enc = ResidualEncoder(in_channels=3, embed_dim=base.decoder_embed_dim)
-    return TwoStageDMAE(
-        base,
-        cond_decoder,
-        res_enc,
+        print(f"Loaded DMAE weights from {dmae_ckpt} (missing {len(missing)}, unexpected {len(unexpected)})")
+
+    model = TwoStageDMAE(
+        base_model=base,
         freeze_base=freeze_base,
         use_quaternion_noise=use_quaternion_noise,
         levels=levels,
         ratio=ratio,
+        num_classes=num_classes,
+        use_head=use_head,
+        base_dim=base_dim,
+        head_hidden_dim=head_hidden_dim,
     )
+    return model

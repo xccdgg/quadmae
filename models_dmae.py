@@ -10,7 +10,7 @@ from util.pos_embed import get_2d_sincos_pos_embed
 import torchvision.transforms as transforms
 import PIL
 
-from util.noise import add_noise, to_bool
+from util.noise import add_noise, format_sigma_spec, parse_sigma_spec, sample_sigma, to_bool
 from util.qwt_prior import DeterministicQWTPrior
 
 
@@ -28,7 +28,9 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         super().__init__()
 
         # the standard variance of noise
-        self.sigma = sigma
+        self.sigma = parse_sigma_spec(sigma)
+        self.sigma_label = format_sigma_spec(self.sigma)
+        self.last_noise_sigma = None
         self.use_head = use_head
         self.use_quaternion_noise = to_bool(use_quaternion_noise)
         self.levels = int(levels)
@@ -261,9 +263,11 @@ class DenoisingMaskedAutoencoderViT(nn.Module):
         return loss
 
     def forward(self, imgs, mask_ratio=0.75):
+        current_sigma = sample_sigma(self.sigma, imgs.device)
+        self.last_noise_sigma = current_sigma
         imgs_noised = add_noise(
             imgs,
-            self.sigma,
+            current_sigma,
             use_quaternion_noise=self.use_quaternion_noise,
             levels=self.levels,
             ratio=self.ratio,

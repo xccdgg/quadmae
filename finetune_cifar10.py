@@ -21,6 +21,7 @@ from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 import util.lr_decay as lrd
 import util.misc as misc
 from util.datasets import build_dataset, build_dataset_with_interval
+from util.noise import format_sigma_spec, parse_sigma_spec
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from torchvision import datasets, transforms
@@ -231,8 +232,8 @@ def get_args_parser():
                         help='url used to set up distributed training')
 
     # certified accuracy parameters
-    parser.add_argument('--sigma', default=0.25, type=float,
-                        help='Std of Gaussian noise')
+    parser.add_argument('--sigma', default=0.25, type=parse_sigma_spec,
+                        help='Std of noise, or a training range like "[0,0.75]"')
     parser.add_argument('--use_quaternion_noise', default=True,
                         help='Use quaternion wavelet noise instead of pixel Gaussian')
     parser.add_argument('--levels', default=1, type=int,
@@ -434,7 +435,7 @@ def main(args):
 
     print("accumulate grad iterations: %d" % args.accum_iter)
     print("effective batch size: %d" % eff_batch_size)
-    print("randomized smoothing with sigma: %.2f" % args.sigma)
+    print("randomized smoothing/training noise sigma: {}".format(format_sigma_spec(args.sigma)))
 
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
@@ -524,7 +525,8 @@ def main(args):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
-                     'n_parameters': n_parameters}
+                     'n_parameters': n_parameters,
+                     'sigma': format_sigma_spec(args.sigma)}
 
         if args.output_dir and misc.is_main_process():
             misc.save_model(

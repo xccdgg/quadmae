@@ -19,6 +19,7 @@ import timm.optim.optim_factory as optim_factory
 
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from util.noise import format_sigma_spec, parse_sigma_spec
 
 import models_dmae
 
@@ -47,8 +48,8 @@ def get_args_parser():
                         help='Use (per-patch) normalized pixels as targets for computing loss')
     parser.set_defaults(norm_pix_loss=False)
 
-    parser.add_argument('--sigma', default=0.5, type=float,
-                        help='Std of Gaussian noise')
+    parser.add_argument('--sigma', default=0.5, type=parse_sigma_spec,
+                        help='Std of noise, or a training range like "[0,0.75]"')
     parser.add_argument(
         '--use_quaternion_noise',
         type=lambda x: str(x).lower() in ('true', '1', 'yes'),
@@ -232,7 +233,8 @@ def main(args):
             misc.cleanup_epoch_checkpoints(args.output_dir, keep_epoch=epoch)
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                        'epoch': epoch,}
+                        'epoch': epoch,
+                        'sigma': format_sigma_spec(args.sigma)}
 
         if args.output_dir and misc.is_main_process():
             if log_writer is not None:

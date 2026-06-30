@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from scipy.stats import norm
 from statsmodels.stats.proportion import proportion_confint
 
-from util.noise import add_noise, sigma_total_from_pixel, to_bool
+from util.noise import add_noise, fixed_sigma_value, sigma_total_from_pixel, to_bool
 
 __all__ = ["Smooth"]
 
@@ -34,7 +34,7 @@ class Smooth(nn.Module):
         super().__init__()
         self.base_classifier = base_classifier.eval()
         self.num_classes = num_classes
-        self.sigma_pix = float(sigma)
+        self.sigma_pix = fixed_sigma_value(sigma)
         self.use_qwt = to_bool(use_quaternion_noise)
         self.ratio = float(ratio)
         self.levels = int(levels)

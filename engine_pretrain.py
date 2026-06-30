@@ -180,6 +180,12 @@ def train_one_epoch(
 
         # ---- logging -------------------------------------------------------------------
         metric_logger.update(loss=loss_value)
+        model_for_log = model.module if hasattr(model, "module") else model
+        last_noise_sigma = getattr(model_for_log, "last_noise_sigma", None)
+        if last_noise_sigma is None and hasattr(model_for_log, "base"):
+            last_noise_sigma = getattr(model_for_log.base, "last_noise_sigma", None)
+        if last_noise_sigma is not None:
+            metric_logger.update(noise_sigma=last_noise_sigma)
         if isinstance(aux_metrics, dict):
             metric_logger.update(**aux_metrics)
         lr_current = optimizer.param_groups[0]["lr"]

@@ -15,32 +15,43 @@ from torchvision.datasets import CIFAR10, ImageFolder
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
-from util.noise import add_noise, sigma_total_from_pixel, to_bool as _to_bool
+from util.noise import (
+    add_noise,
+    format_sigma_spec,
+    parse_sigma_spec,
+    sample_sigma,
+    sigma_spec_max,
+    sigma_total_from_pixel,
+    to_bool as _to_bool,
+)
 
 
 class AddNoise:
     def __init__(
         self,
-        sigma: float,
+        sigma: Any,
         *,
         use_quaternion_noise: bool = True,
         levels: int = 1,
         ratio: float = 3.0,
         device: Any = "cpu",
     ) -> None:
-        self.sigma_pix = float(sigma)
+        self.sigma_spec = parse_sigma_spec(sigma)
+        self.sigma_label = format_sigma_spec(self.sigma_spec)
+        self.sigma_pix = sigma_spec_max(self.sigma_spec)
         self.use_qwt = _to_bool(use_quaternion_noise)
         self.levels = int(levels)
         self.ratio = float(ratio)
         self.device = torch.device(device)
+        self.last_sigma_pix: float | None = None
 
         self.sigma_total = sigma_total_from_pixel(self.sigma_pix, self.ratio)
         self.sigma_low = self.sigma_total / (1.0 + self.ratio)
         self.sigma_high = self.sigma_low * self.ratio
 
         print(
-            f"[AddNoise] sigma_pix={self.sigma_pix:.4f} sigma_total={self.sigma_total:.4f} "
-            f"sigma_L={self.sigma_low:.4f} sigma_H={self.sigma_high:.4f} ratio={self.ratio}"
+            f"[AddNoise] sigma_pix={self.sigma_label} max_sigma_total={self.sigma_total:.4f} "
+            f"max_sigma_L={self.sigma_low:.4f} max_sigma_H={self.sigma_high:.4f} ratio={self.ratio}"
         )
 
     def __call__(self, img: Tensor) -> Tensor:
@@ -48,12 +59,14 @@ class AddNoise:
             arr = np.asarray(img, dtype=np.float32) / 255.0
             img = torch.from_numpy(arr).permute(2, 0, 1)
 
-        if self.sigma_pix <= 0:
+        sigma_pix = sample_sigma(self.sigma_spec, img.device)
+        self.last_sigma_pix = sigma_pix
+        if sigma_pix <= 0:
             return img
 
         return add_noise(
             img,
-            self.sigma_pix,
+            sigma_pix,
             use_quaternion_noise=self.use_qwt,
             levels=self.levels,
             ratio=self.ratio,
@@ -77,7 +90,7 @@ class NoisyImageDataset(Dataset):
         self.batch_size = batch_size
 
         transform = [transforms.ToTensor()]
-        if noise_sigma and noise_sigma > 0:
+        if noise_sigma and sigma_spec_max(noise_sigma) > 0:
             transform.append(
                 AddNoise(
                     sigma=noise_sigma,
