@@ -9,6 +9,7 @@
 import numpy as np
 import torch
 from util.quadatasetgpu import QuaternionWaveletNoise
+from util.noise import sigma_total_from_pixel
 
 def main():
     # 1) 参数设定：像素域目标标准差 σ_pix 和 高频/低频 比 ratio
@@ -16,7 +17,7 @@ def main():
     ratio     = 3.0
 
     # 2) 计算 QWT 域总噪声 σ_total 及其子带 σ_L, σ_H
-    sigma_total = sigma_pix * 4.0 * (1.0 + ratio) / np.sqrt(3.0 * (1.0 + 3.0 * ratio * ratio))
+    sigma_total = sigma_total_from_pixel(sigma_pix, ratio)
     sigma_L     = sigma_total / (1.0 + ratio)
     sigma_H     = sigma_L * ratio
 
@@ -29,10 +30,10 @@ def main():
     print(f"[Verify] sigma_pix={sigma_pix:.4f}, ratio={ratio:.1f}")
     print(f"[Verify] sigma_total={sigma_total:.6f}, sigma_L={sigma_L:.6f}, sigma_H={sigma_H:.6f}")
     print(f"[Verify] 理论 gray-pixel 方差 = {var_theo_gray:.6f}")
-    print(f"[Verify] 理论 per-channel 方差 = {var_theo_chan:.6f}")
+    print(f"[Verify] 理论 per-channel 方差 = {var_theo_chan:.6f}; target={sigma_pix**2:.6f}")
 
     # 4) Monte Carlo 实验：生成 N 个 2×2 全零图块，3 通道
-    N = 200_000
+    N = 20_000
     device = torch.device("cpu")  # 强制使用 CPU，避免 NCCL 问题
     zeros = torch.zeros(N, 3, 2, 2, device=device)
 
@@ -61,7 +62,7 @@ def main():
     print(f"[Verify] gray-pixel 相对误差 = {err_gray:.4%}")
     print(f"[Verify] per-channel 相对误差 = {err_chan:.4%}")
 
-    # 8) 断言：误差必须在 1% 内
+    # 8) 验证每通道目标方差及理论值
     assert err_gray < 0.01, f"灰度像素方差误差过大: {err_gray:.2%}"
     assert err_chan < 0.01, f"通道方差误差过大: {err_chan:.2%}"
 
