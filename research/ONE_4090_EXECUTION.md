@@ -17,6 +17,9 @@ No benchmark has been run on the user's GPU.
   its sigma-estimator / local-constancy certificate intact, and treat its
   official checkpoint experiments as a separate protocol until matched.
 - Important strong representation benchmark: official **ICLR 2025 rRCM**.
+  Its official README uses 8 GPUs for CIFAR-10 pretraining and 16-32 GPUs
+  for ImageNet pretraining, so on one 4090 **reuse released models or
+  published figures with protocol caveats; do not promise full retraining**.
 - Current DMAE/QWT implementation is a hypothesis generator and historical
   control, not a valid new robustness certificate in QWT-inference mode.
 
