@@ -99,7 +99,9 @@ def sample_sigma(value: Any, device: Any = None) -> float:
 
 
 def sigma_total_from_pixel(sigma_pix: float, ratio: float) -> float:
-    return 2.0 * (1.0 + ratio) * sigma_pix / math.sqrt(1.0 + 3.0 * ratio * ratio)
+    # The QWT implementation divides each RGB coefficient noise by sqrt(3).
+    # Compensate here so sigma_pix means PER-CHANNEL pixel standard deviation.
+    return 2.0 * math.sqrt(3.0) * (1.0 + ratio) * sigma_pix / math.sqrt(1.0 + 3.0 * ratio * ratio)
 
 
 def add_noise(
