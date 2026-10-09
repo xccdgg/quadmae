@@ -76,7 +76,7 @@ def get_args_parser():
                         help='fixed standard deviation for randomized smoothing')
     parser.add_argument('--sample_interval', default=1, type=int,
                         help="the interval of sampling during test")
-    parser.add_argument('--num', default=1000, type=int,
+    parser.add_argument('--num', default=10000, type=int,
                         help="the samples for evaluate radius")
     parser.add_argument(
         '--use_quaternion_noise',
@@ -256,7 +256,7 @@ def main(args):
     if args.sigma:
         smoothed_classifier = Smooth(
             classifier_for_smooth,
-            num_classes,
+            args.nb_classes,
             args.sigma,
             use_quaternion_noise=args.use_quaternion_noise,
             levels=args.levels,
@@ -283,7 +283,7 @@ def main(args):
         for sigma in [0.25, 0.5, 1.0]:
             smoothed_classifier = Smooth(
                 classifier_for_smooth,
-                num_classes,
+                args.nb_classes,
                 sigma,
                 use_quaternion_noise=args.use_quaternion_noise,
                 levels=args.levels,
