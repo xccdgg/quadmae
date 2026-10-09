@@ -1,5 +1,18 @@
 # One RTX 4090: staged, auditable CVPR feasibility plan
 
+**CVPR 2027 hard deadlines (AOE):** Registration **Nov 10, 2026**;
+Main-paper submission **Nov 16, 2026**; Supplementary **Nov 23, 2026**.
+Official CFP: https://cvpr.thecvf.com/Conferences/2027/CallForPapers
+As of Oct 10, 2026, the main-paper deadline is only ~37 days away.
+Do not assume full-scale multiple-GPU replications fit this schedule.
+
+**First 7-day stop/go condition:** Gaussian certificate code and transforms
+pass regression tests; at least one baseline checkpoint is reproduced under
+matched validation sampling; a 5-epoch frequency-consistency pilot has a
+measurable and reproducible advantage over the equal-budget consistency
+control. If not, narrow the claim or pivot to a more feasible venue instead
+of writing unsupported SOTA assertions.
+
 Hardware assumption: **one desktop RTX 4090, typically 24 GB VRAM**.
 If this is a laptop or 4090D, run the profiler to replace all assumptions.
 No benchmark has been run on the user's GPU.
