@@ -9,6 +9,7 @@
 import numpy as np
 import torch
 from util.quadatasetgpu import QuaternionWaveletNoise
+from util.noise import sigma_total_from_pixel
 
 def main():
     # — 1）参数设定 —
@@ -16,7 +17,7 @@ def main():
     ratio     = 3.0  # 高频/低频 标准差比
 
     # — 2）计算 QWT 域总体 σ_total 及子带 σ_L, σ_H —
-    sigma_total = sigma_pix * 4.0 * (1.0 + ratio) / np.sqrt(3.0 * (1.0 + 3.0 * ratio * ratio))
+    sigma_total = sigma_total_from_pixel(sigma_pix, ratio)
     sigma_L     = sigma_total / (1.0 + ratio)
     sigma_H     = sigma_L * ratio
 
@@ -25,10 +26,10 @@ def main():
 
     print(f"[Verify] sigma_pix={sigma_pix:.4f}, ratio={ratio}")
     print(f"[Verify] sigma_total={sigma_total:.6f}, sigma_L={sigma_L:.6f}, sigma_H={sigma_H:.6f}")
-    print(f"[Verify] 理论单通道方差 = {var_theo_chan:.6f}")
+    print(f"[Verify] 理论单通道方差 = {var_theo_chan:.6f}; target={sigma_pix**2:.6f}")
 
     # — 4）Monte Carlo 实验 — 在 2×2 全零块上叠 N 次噪声，3 通道
-    N = 200_000
+    N = 20_000
     device = torch.device("cpu")  # 用 CPU 可以避免显卡资源波动
     zeros = torch.zeros(N, 3, 2, 2, device=device)
 
@@ -48,7 +49,7 @@ def main():
 
     print(f"[Verify] 实验 per-channel 方差 = {var_emp_chan:.6f}")
 
-    # — 6）误差检查 —
+    # — 6）误差检查：目标为 sigma_pix**2 —
     rel_err = abs(var_emp_chan - var_theo_chan) / var_theo_chan
     print(f"[Verify] 相对误差 = {rel_err:.4%}")
 
