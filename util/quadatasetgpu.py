@@ -45,7 +45,7 @@ class QuaternionWavelet:
         h = torch.tensor([1 / math.sqrt(2)] * 2, device=self.device)
         g = torch.tensor([1 / math.sqrt(2), -1 / math.sqrt(2)], device=self.device)
         self.h, self.g = h, g
-        self.hr, self.gr = h.flip(0), g.flip(0)        # 逆卷积核
+        self.hr, self.gr = h, g                       # conv_transpose is adjoint of conv (no reverse)
 
     # ---------------- 可分离 2‑D 下采样卷积 -------------------------------
     def _conv2d_sep(self, x: torch.Tensor,
@@ -69,7 +69,6 @@ class QuaternionWavelet:
 
     # --------------------------- 正向分解 --------------------------------
     def decompose(self, images: torch.Tensor, levels: int = 1):
-        print("quanoise")
         """单层分解；返回 dict：{'LL': Tensor, 'subbands': [(LH,HL,HH)]}"""
         if images.dim() == 2:              # 灰度 H×W → 1×H×W×1
             images = images.unsqueeze(0).unsqueeze(-1)
@@ -169,6 +168,8 @@ class QuaternionWaveletNoise:
         self.device = torch.device(device or
                                    ("cuda" if torch.cuda.is_available() else "cpu"))
         self.levels = int(levels)
+        if self.levels != 1:
+            raise ValueError('Only one QWT level is implemented; multi-level inversion is unsupported')
         self.sigma_low = sigma / (1.0 + ratio)
         self.sigma_high = sigma * ratio / (1.0 + ratio)
         self.qwt = QuaternionWavelet(filter_name=filter_name, device=self.device)
@@ -252,21 +253,21 @@ class QuaternionWaveletNoise:
         dx   =  tmp % 2
         dy   =  tmp // 2
 
-        # 逆平移
-        rolled = _build_shift_variants(x)                # (4,N,C,H,W)
-        inv_shift_idx = dx + 2 * dy
-        inv_shift_idx = inv_shift_idx.view(1, N, 1, 1, 1).expand(1, -1, C, H, W)
-        x = torch.gather(rolled, 0, inv_shift_idx).squeeze(0)
+        # Undo forward flip -> rotation -> positive cyclic shift in reverse order.
+        inv_shift_variants = torch.stack([
+            x,
+            torch.roll(x, shifts=(0, -1), dims=(2, 3)),
+            torch.roll(x, shifts=(-1, 0), dims=(2, 3)),
+            torch.roll(x, shifts=(-1, -1), dims=(2, 3)),
+        ], dim=0)
+        inv_shift_idx = (dx + 2 * dy).view(1, N, 1, 1, 1).expand(1, -1, C, H, W)
+        x = torch.gather(inv_shift_variants, 0, inv_shift_idx).squeeze(0)
 
-        # 逆翻转
+        rot_back = _build_rot_variants(x)
+        inv_k = ((-k) % 4).view(1, N, 1, 1, 1).expand(1, -1, C, H, W)
+        x = torch.gather(rot_back, 0, inv_k).squeeze(0)
         x_flip = torch.flip(x, dims=(3,))
         x = torch.where(flip.view(N, 1, 1, 1).bool(), x_flip, x)
-
-        # 逆旋转
-        rot_back = _build_rot_variants(x)                # (4,N,C,H,W)
-        inv_k = (-k) % 4
-        inv_k = inv_k.view(1, N, 1, 1, 1).expand(1, -1, C, H, W)
-        x = torch.gather(rot_back, 0, inv_k).squeeze(0)
         return x.squeeze(0) if x.shape[0] == 1 else x
 
     # --------------------------- 外部入口 ---------------------------
