@@ -26,7 +26,7 @@ class Smooth(nn.Module):
         num_classes: int,
         sigma: float,
         *,
-        use_quaternion_noise: bool = True,
+        use_quaternion_noise: bool = False,
         levels: int = 1,
         ratio: float = 3.0,
         device: Optional[Union[str, torch.device]] = None,
@@ -36,6 +36,13 @@ class Smooth(nn.Module):
         self.num_classes = num_classes
         self.sigma_pix = fixed_sigma_value(sigma)
         self.use_qwt = to_bool(use_quaternion_noise)
+        if self.use_qwt:
+            raise ValueError(
+                'QWT-corrupted inference cannot be certified with the standard isotropic '
+                'Gaussian Cohen radius: matching covariance is not matching distribution. '
+                'Use pixel Gaussian noise for certified evaluation. QWT remains available '
+                'for training-only corruption until a valid non-Gaussian certificate is implemented.'
+            )
         self.ratio = float(ratio)
         self.levels = int(levels)
 

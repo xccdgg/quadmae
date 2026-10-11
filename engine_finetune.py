@@ -352,6 +352,12 @@ def certify_evaluate_dist(
     restorer=None,
     use_rcot: bool = False,
 ):
+    if restorer is not None:
+        raise ValueError(
+            'Unsupported certification: pre-restoring x before adding smoothing noise '
+            'does not certify original-input perturbations. Wrap the restoration '
+            'module INSIDE the classifier applied to each noisy draw, then pass restorer=None.'
+        )
     metric_logger = misc.MetricLogger(delimiter="  ")
     header = 'Test:'
 
